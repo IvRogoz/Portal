@@ -204,7 +204,7 @@ const applyPose = (pose: Pose) => {
   const sensY = Number(sensYInput.value)
   const sensZ = Number(sensZInput.value)
 
-  const normalizedX = (pose.x - view.calibration.x) * sensX
+  const normalizedX = -(pose.x - view.calibration.x) * sensX
   const normalizedY = (view.calibration.y - pose.y) * sensY
   const depthFactor = view.calibration.eyeDistance / pose.eyeDistance
   const normalizedZ = (depthFactor - 1) * sensZ
