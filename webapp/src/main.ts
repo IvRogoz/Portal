@@ -105,6 +105,36 @@ const rightWall = leftWall.clone()
 rightWall.position.x = 3.5
 sceneWorld.add(rightWall)
 
+const bullseyeRings = [0.9, 0.72, 0.54, 0.36, 0.18]
+const bullseyeColors = [0xd1413d, 0xf4f1e8, 0xd1413d, 0xf4f1e8, 0xd1413d]
+
+const createBullseye = () => {
+  const bullseye = new THREE.Group()
+
+  bullseyeRings.forEach((radius, index) => {
+    const ring = new THREE.Mesh(
+      new THREE.CircleGeometry(radius, 64),
+      new THREE.MeshBasicMaterial({ color: bullseyeColors[index] })
+    )
+    ring.position.z = index * 0.001
+    bullseye.add(ring)
+  })
+
+  return bullseye
+}
+
+const bullseyePositions = [
+  { x: 0, y: 0, z: -3.4 },
+  { x: -1.4, y: 0.7, z: -5.2 },
+  { x: 1.3, y: -0.6, z: -6.9 },
+]
+
+bullseyePositions.forEach(({ x, y, z }) => {
+  const bullseye = createBullseye()
+  bullseye.position.set(x, y, z)
+  sceneWorld.add(bullseye)
+})
+
 const frameShape = new THREE.Shape()
 frameShape.moveTo(-WINDOW_WIDTH / 2, -WINDOW_HEIGHT / 2)
 frameShape.lineTo(WINDOW_WIDTH / 2, -WINDOW_HEIGHT / 2)
