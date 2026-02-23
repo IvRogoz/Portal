@@ -124,9 +124,9 @@ const createBullseye = () => {
 }
 
 const bullseyePositions = [
-  { x: 0, y: 0, z: -3.4 },
-  { x: -1.4, y: 0.7, z: -5.2 },
-  { x: 1.3, y: -0.6, z: -6.9 },
+  { x: 0, y: 0, z: -4.8 },
+  { x: -1.6, y: 0.8, z: -7.2 },
+  { x: 1.5, y: -0.7, z: -2.6 },
 ]
 
 bullseyePositions.forEach(({ x, y, z }) => {
