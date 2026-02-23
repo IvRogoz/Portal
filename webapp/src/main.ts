@@ -77,7 +77,7 @@ const ROOM_CENTER_Z = ROOM_FRONT_Z - ROOM_DEPTH / 2
 const ROOM_BACK_Z = ROOM_FRONT_Z - ROOM_DEPTH
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.Fog(0x9ab6cc, 8, 20)
+scene.fog = new THREE.FogExp2(0xd7e6f1, 0.05)
 
 const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 100)
 camera.position.set(0, 0, 1.4)
@@ -145,6 +145,26 @@ const rightWall = createSideWallGrid()
 rightWall.rotation.y = -Math.PI / 2
 rightWall.position.set(ROOM_WIDTH / 2, 0, ROOM_CENTER_Z)
 sceneWorld.add(rightWall)
+
+const hazeLayerMaterial = new THREE.MeshBasicMaterial({
+  color: 0xe7f1f7,
+  transparent: true,
+  opacity: 0.08,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+})
+
+const hazeDepths = [ROOM_CENTER_Z - 0.3, ROOM_CENTER_Z - 0.9, ROOM_BACK_Z + 0.25]
+hazeDepths.forEach((depth, index) => {
+  const hazeLayer = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_WIDTH * 1.1, ROOM_HEIGHT * 1.02),
+    hazeLayerMaterial.clone()
+  )
+  const material = hazeLayer.material as THREE.MeshBasicMaterial
+  material.opacity = 0.05 + index * 0.02
+  hazeLayer.position.set(0, 0, depth)
+  sceneWorld.add(hazeLayer)
+})
 
 const bullseyeRings = [0.9, 0.72, 0.54, 0.36, 0.18]
 const bullseyeColors = [0xd1413d, 0xf4f1e8, 0xd1413d, 0xf4f1e8, 0xd1413d]
