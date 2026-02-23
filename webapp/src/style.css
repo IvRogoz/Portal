@@ -158,6 +158,20 @@ input[type='range'] {
   width: 100%;
 }
 
+input[type='number'] {
+  width: 100%;
+  border: 1px solid rgba(28, 76, 102, 0.2);
+  border-radius: 10px;
+  padding: 0.48rem 0.58rem;
+  font: inherit;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+#rerandomize-targets {
+  align-self: end;
+}
+
 @media (max-width: 760px) {
   #app {
     width: calc(100% - 1rem);

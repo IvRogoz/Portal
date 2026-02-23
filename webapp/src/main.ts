@@ -38,6 +38,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         Smoothing
         <input id="smooth" type="range" min="0.02" max="0.4" step="0.01" value="0.14" />
       </label>
+      <label>
+        Secondary Targets
+        <input id="target-count" type="number" min="2" max="30" step="1" value="10" />
+      </label>
+      <button id="rerandomize-targets" type="button">Rerandomize Targets</button>
     </section>
   </main>
 `
@@ -58,6 +63,9 @@ const sensXInput = document.querySelector<HTMLInputElement>('#sens-x')!
 const sensYInput = document.querySelector<HTMLInputElement>('#sens-y')!
 const sensZInput = document.querySelector<HTMLInputElement>('#sens-z')!
 const smoothInput = document.querySelector<HTMLInputElement>('#smooth')!
+const targetCountInput = document.querySelector<HTMLInputElement>('#target-count')!
+const rerandomizeTargetsButton =
+  document.querySelector<HTMLButtonElement>('#rerandomize-targets')!
 
 const WINDOW_WIDTH = 3
 const WINDOW_HEIGHT = 1.8
@@ -160,12 +168,15 @@ const mainBullseye = createBullseye(1)
 mainBullseye.position.set(0, 0, ROOM_CENTER_Z)
 sceneWorld.add(mainBullseye)
 
-const secondaryBullseyePositions = [
+const secondaryTargets = new THREE.Group()
+sceneWorld.add(secondaryTargets)
+
+const secondaryAnchorTargets = [
   { x: -1.6, y: 0.8, z: ROOM_BACK_Z + 0.1 },
   { x: 1.5, y: -0.7, z: ROOM_FRONT_Z - 0.6 },
 ]
 
-for (let i = 0; i < 8; i += 1) {
+const randomSecondaryPosition = () => {
   let x = 0
   let y = 0
   let z = 0
@@ -180,13 +191,35 @@ for (let i = 0; i < 8; i += 1) {
     Math.abs(z - ROOM_CENTER_Z) < 0.8
   )
 
-  secondaryBullseyePositions.push({ x, y, z })
+  return { x, y, z }
 }
 
-secondaryBullseyePositions.forEach(({ x, y, z }) => {
-  const bullseye = createBullseye(0.35)
-  bullseye.position.set(x, y, z)
-  sceneWorld.add(bullseye)
+const buildSecondaryTargets = (requestedCount: number) => {
+  const targetCount = THREE.MathUtils.clamp(Math.floor(requestedCount), 2, 30)
+  targetCountInput.value = String(targetCount)
+  secondaryTargets.clear()
+
+  const positions = [...secondaryAnchorTargets]
+  for (let i = positions.length; i < targetCount; i += 1) {
+    positions.push(randomSecondaryPosition())
+  }
+
+  positions.forEach(({ x, y, z }) => {
+    const bullseye = createBullseye(0.35)
+    bullseye.position.set(x, y, z)
+    secondaryTargets.add(bullseye)
+  })
+}
+
+buildSecondaryTargets(Number(targetCountInput.value))
+
+rerandomizeTargetsButton.addEventListener('click', () => {
+  buildSecondaryTargets(Number(targetCountInput.value))
+  setStatus('Secondary targets rerandomized')
+})
+
+targetCountInput.addEventListener('change', () => {
+  buildSecondaryTargets(Number(targetCountInput.value))
 })
 
 const frameShape = new THREE.Shape()
