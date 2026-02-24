@@ -1,48 +1,14 @@
 import './style.css'
 import * as THREE from 'three'
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
+import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js'
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main class="app-shell">
-    <header class="top-bar">
-      <div>
-        <p class="eyebrow">Head-Tracked Window</p>
-        <h1>Parallax Room Viewer</h1>
-      </div>
-      <div class="actions">
-        <button id="start-camera">Start Camera</button>
-        <button id="calibrate" disabled>Calibrate Center</button>
-      </div>
-    </header>
-
     <section class="viewport-card">
       <div id="scene" class="scene"></div>
       <video id="webcam" autoplay playsinline muted></video>
       <div id="status" class="status-pill">Initializing...</div>
-    </section>
-
-    <section class="controls">
-      <label>
-        Horizontal Sensitivity
-        <input id="sens-x" type="range" min="0.5" max="6" step="0.1" value="2.8" />
-      </label>
-      <label>
-        Vertical Sensitivity
-        <input id="sens-y" type="range" min="0.5" max="6" step="0.1" value="2.2" />
-      </label>
-      <label>
-        Depth Sensitivity
-        <input id="sens-z" type="range" min="0" max="5" step="0.1" value="1.6" />
-      </label>
-      <label>
-        Smoothing
-        <input id="smooth" type="range" min="0.02" max="0.4" step="0.01" value="0.14" />
-      </label>
-      <label>
-        Secondary Targets
-        <input id="target-count" type="number" min="2" max="30" step="1" value="10" />
-      </label>
-      <button id="rerandomize-targets" type="button">Rerandomize Targets</button>
     </section>
   </main>
 `
@@ -54,27 +20,56 @@ type Pose = {
   eyeDistance: number
 }
 
+type SerializedTarget = {
+  x: number
+  y: number
+  z: number
+  scale: number
+}
+
+type LayoutSnapshot = {
+  version: number
+  controls: {
+    roomDepth: number
+    targetNear: number
+    targetFar: number
+    targetMinScale: number
+    targetMaxScale: number
+    mainTargetDepth: number
+    mainTargetScale: number
+    targetCount: number
+  }
+  secondaryTargets: SerializedTarget[]
+}
+
 const sceneRoot = document.querySelector<HTMLDivElement>('#scene')!
 const webcam = document.querySelector<HTMLVideoElement>('#webcam')!
 const statusPill = document.querySelector<HTMLDivElement>('#status')!
-const startButton = document.querySelector<HTMLButtonElement>('#start-camera')!
-const calibrateButton = document.querySelector<HTMLButtonElement>('#calibrate')!
-const sensXInput = document.querySelector<HTMLInputElement>('#sens-x')!
-const sensYInput = document.querySelector<HTMLInputElement>('#sens-y')!
-const sensZInput = document.querySelector<HTMLInputElement>('#sens-z')!
-const smoothInput = document.querySelector<HTMLInputElement>('#smooth')!
-const targetCountInput = document.querySelector<HTMLInputElement>('#target-count')!
-const rerandomizeTargetsButton =
-  document.querySelector<HTMLButtonElement>('#rerandomize-targets')!
+const LAYOUT_STORAGE_KEY = 'parallax-room-layout-v1'
 
-const WINDOW_WIDTH = 3
 const WINDOW_HEIGHT = 1.8
-const ROOM_WIDTH = 7
-const ROOM_HEIGHT = 4.4
-const ROOM_DEPTH = 3.5
-const ROOM_FRONT_Z = -1.3
-const ROOM_CENTER_Z = ROOM_FRONT_Z - ROOM_DEPTH / 2
-const ROOM_BACK_Z = ROOM_FRONT_Z - ROOM_DEPTH
+const ROOM_WIDTH =
+  WINDOW_HEIGHT * (sceneRoot.clientWidth / Math.max(sceneRoot.clientHeight, 1))
+const ROOM_HEIGHT = WINDOW_HEIGHT
+const BASE_ROOM_DEPTH = 3.5
+const ROOM_FRONT_Z = 0
+const ROOM_CENTER_Z = ROOM_FRONT_Z - BASE_ROOM_DEPTH / 2
+const ROOM_BACK_Z = ROOM_FRONT_Z - BASE_ROOM_DEPTH
+
+const controls = {
+  horizontalSensitivity: 2.8,
+  verticalSensitivity: 2.2,
+  depthSensitivity: 1.6,
+  smoothing: 0.14,
+  targetCount: 10,
+  roomDepth: BASE_ROOM_DEPTH,
+  targetNear: 0.6,
+  targetFar: BASE_ROOM_DEPTH - 0.2,
+  targetMinScale: 0.22,
+  targetMaxScale: 0.42,
+  mainTargetDepth: BASE_ROOM_DEPTH / 2,
+  mainTargetScale: 1,
+}
 
 const scene = new THREE.Scene()
 scene.fog = new THREE.FogExp2(0xd7e6f1, 0.05)
@@ -91,6 +86,12 @@ sceneRoot.appendChild(renderer.domElement)
 const sceneWorld = new THREE.Group()
 scene.add(sceneWorld)
 
+const roomStructure = new THREE.Group()
+sceneWorld.add(roomStructure)
+
+const targetsLayer = new THREE.Group()
+sceneWorld.add(targetsLayer)
+
 const ambient = new THREE.AmbientLight(0xffffff, 0.9)
 scene.add(ambient)
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.6)
@@ -100,21 +101,21 @@ scene.add(keyLight)
 const wallLineMaterial = new THREE.LineBasicMaterial({ color: 0x4f6f86 })
 const createHorizontalGrid = () =>
   new THREE.LineSegments(
-    new THREE.WireframeGeometry(
-      new THREE.PlaneGeometry(ROOM_WIDTH, ROOM_DEPTH, 18, 10)
-    ),
+      new THREE.WireframeGeometry(
+      new THREE.PlaneGeometry(ROOM_WIDTH, BASE_ROOM_DEPTH, 18, 10)
+      ),
     wallLineMaterial
   )
 
 const floor = createHorizontalGrid()
 floor.rotation.x = -Math.PI / 2
 floor.position.set(0, -ROOM_HEIGHT / 2, ROOM_CENTER_Z)
-sceneWorld.add(floor)
+roomStructure.add(floor)
 
 const ceiling = createHorizontalGrid()
 ceiling.rotation.x = -Math.PI / 2
 ceiling.position.set(0, ROOM_HEIGHT / 2, ROOM_CENTER_Z)
-sceneWorld.add(ceiling)
+roomStructure.add(ceiling)
 
 const createBackWallGrid = () =>
   new THREE.LineSegments(
@@ -126,25 +127,25 @@ const createBackWallGrid = () =>
 
 const createSideWallGrid = () =>
   new THREE.LineSegments(
-    new THREE.WireframeGeometry(
-      new THREE.PlaneGeometry(ROOM_DEPTH, ROOM_HEIGHT, 10, 12)
-    ),
+      new THREE.WireframeGeometry(
+      new THREE.PlaneGeometry(BASE_ROOM_DEPTH, ROOM_HEIGHT, 10, 12)
+      ),
     wallLineMaterial
   )
 
 const backWall = createBackWallGrid()
 backWall.position.set(0, 0, ROOM_BACK_Z)
-sceneWorld.add(backWall)
+roomStructure.add(backWall)
 
 const leftWall = createSideWallGrid()
 leftWall.rotation.y = Math.PI / 2
 leftWall.position.set(-ROOM_WIDTH / 2, 0, ROOM_CENTER_Z)
-sceneWorld.add(leftWall)
+roomStructure.add(leftWall)
 
 const rightWall = createSideWallGrid()
 rightWall.rotation.y = -Math.PI / 2
 rightWall.position.set(ROOM_WIDTH / 2, 0, ROOM_CENTER_Z)
-sceneWorld.add(rightWall)
+roomStructure.add(rightWall)
 
 const hazeLayerMaterial = new THREE.MeshBasicMaterial({
   color: 0xe7f1f7,
@@ -163,7 +164,7 @@ hazeDepths.forEach((depth, index) => {
   const material = hazeLayer.material as THREE.MeshBasicMaterial
   material.opacity = 0.05 + index * 0.02
   hazeLayer.position.set(0, 0, depth)
-  sceneWorld.add(hazeLayer)
+  roomStructure.add(hazeLayer)
 })
 
 const bullseyeRings = [0.9, 0.72, 0.54, 0.36, 0.18]
@@ -186,76 +187,306 @@ const createBullseye = (scale: number) => {
 
 const mainBullseye = createBullseye(1)
 mainBullseye.position.set(0, 0, ROOM_CENTER_Z)
-sceneWorld.add(mainBullseye)
+targetsLayer.add(mainBullseye)
 
 const secondaryTargets = new THREE.Group()
-sceneWorld.add(secondaryTargets)
+targetsLayer.add(secondaryTargets)
 
-const secondaryAnchorTargets = [
-  { x: -1.6, y: 0.8, z: ROOM_BACK_Z + 0.1 },
-  { x: 1.5, y: -0.7, z: ROOM_FRONT_Z - 0.6 },
-]
+const getRoomDepth = () => controls.roomDepth
+
+const getRoomCenterZ = () => ROOM_FRONT_Z - getRoomDepth() / 2
+
+const normalizeMainTargetControls = () => {
+  controls.mainTargetDepth = THREE.MathUtils.clamp(
+    controls.mainTargetDepth,
+    0.1,
+    controls.roomDepth - 0.05
+  )
+  controls.mainTargetScale = THREE.MathUtils.clamp(controls.mainTargetScale, 0.3, 2.5)
+}
+
+const applyMainTargetSettings = () => {
+  normalizeMainTargetControls()
+  mainBullseye.position.z = ROOM_FRONT_Z - controls.mainTargetDepth
+  mainBullseye.scale.setScalar(controls.mainTargetScale)
+}
+
+const normalizeTargetDepthControls = () => {
+  controls.roomDepth = THREE.MathUtils.clamp(controls.roomDepth, 1.2, 8)
+  controls.mainTargetDepth = Math.min(controls.mainTargetDepth, controls.roomDepth - 0.05)
+  const nearMax = controls.roomDepth - 0.15
+  controls.targetNear = THREE.MathUtils.clamp(controls.targetNear, 0.1, nearMax)
+  const farMin = controls.targetNear + 0.1
+  const farMax = controls.roomDepth - 0.05
+  controls.targetFar = THREE.MathUtils.clamp(controls.targetFar, farMin, farMax)
+}
+
+const getTargetDepthRange = () => {
+  normalizeTargetDepthControls()
+
+  return {
+    nearZ: ROOM_FRONT_Z - controls.targetNear,
+    farZ: ROOM_FRONT_Z - controls.targetFar,
+  }
+}
+
+const getSecondaryAnchorTargets = () => {
+  const { nearZ, farZ } = getTargetDepthRange()
+  return [
+    { x: -1.6, y: 0.8, z: farZ + 0.15 },
+    { x: 1.5, y: -0.7, z: nearZ - 0.15 },
+  ]
+}
+
+const getRoomBounds = () => {
+  const halfWidth = (ROOM_WIDTH * roomStructure.scale.x) / 2
+  const halfHeight = (ROOM_HEIGHT * roomStructure.scale.y) / 2
+  return { halfWidth, halfHeight }
+}
 
 const randomSecondaryPosition = () => {
+  const { halfWidth, halfHeight } = getRoomBounds()
+  const { nearZ, farZ } = getTargetDepthRange()
+  const xMargin = 0.35
+  const yMargin = 0.3
+  const minX = -halfWidth + xMargin
+  const maxX = halfWidth - xMargin
+  const minY = -halfHeight + yMargin
+  const maxY = halfHeight - yMargin
   let x = 0
   let y = 0
   let z = 0
 
   do {
-    x = THREE.MathUtils.randFloat(-2.8, 2.8)
-    y = THREE.MathUtils.randFloat(-1.8, 1.8)
-    z = THREE.MathUtils.randFloat(ROOM_BACK_Z + 0.2, ROOM_FRONT_Z - 0.3)
+    x = THREE.MathUtils.randFloat(minX, maxX)
+    y = THREE.MathUtils.randFloat(minY, maxY)
+    z = THREE.MathUtils.randFloat(farZ, nearZ)
   } while (
     Math.abs(x) < 0.55 &&
     Math.abs(y) < 0.55 &&
-    Math.abs(z - ROOM_CENTER_Z) < 0.8
+    Math.abs(z - getRoomCenterZ()) < 0.8
   )
 
   return { x, y, z }
 }
 
-const buildSecondaryTargets = (requestedCount: number) => {
-  const targetCount = THREE.MathUtils.clamp(Math.floor(requestedCount), 2, 30)
-  targetCountInput.value = String(targetCount)
+const setSecondaryTargetScale = (target: THREE.Object3D, scale: number) => {
+  const clampedScale = THREE.MathUtils.clamp(
+    scale,
+    Math.min(controls.targetMinScale, controls.targetMaxScale),
+    Math.max(controls.targetMinScale, controls.targetMaxScale)
+  )
+  target.scale.setScalar(clampedScale)
+  target.userData.targetScale = clampedScale
+}
+
+const serializeSecondaryTargets = (): SerializedTarget[] =>
+  secondaryTargets.children.map((target) => ({
+    x: target.position.x,
+    y: target.position.y,
+    z: target.position.z,
+    scale: Number(target.userData.targetScale ?? target.scale.x ?? 1),
+  }))
+
+const createLayoutSnapshot = (): LayoutSnapshot => ({
+  version: 1,
+  controls: {
+    roomDepth: controls.roomDepth,
+    targetNear: controls.targetNear,
+    targetFar: controls.targetFar,
+    targetMinScale: controls.targetMinScale,
+    targetMaxScale: controls.targetMaxScale,
+    mainTargetDepth: controls.mainTargetDepth,
+    mainTargetScale: controls.mainTargetScale,
+    targetCount: controls.targetCount,
+  },
+  secondaryTargets: serializeSecondaryTargets(),
+})
+
+const setSecondaryTargetsFromSnapshot = (serializedTargets: SerializedTarget[]) => {
+  const { halfWidth, halfHeight } = getRoomBounds()
+  const { nearZ, farZ } = getTargetDepthRange()
+  const xLimit = Math.max(halfWidth - 0.35, 0.1)
+  const yLimit = Math.max(halfHeight - 0.3, 0.1)
+
+  const targetCount = THREE.MathUtils.clamp(
+    Math.floor(serializedTargets.length),
+    2,
+    30
+  )
+  controls.targetCount = targetCount
   secondaryTargets.clear()
 
-  const positions = [...secondaryAnchorTargets]
+  const normalizedTargets = [...serializedTargets]
+  for (let i = normalizedTargets.length; i < targetCount; i += 1) {
+    const randomPosition = randomSecondaryPosition()
+    normalizedTargets.push({
+      x: randomPosition.x,
+      y: randomPosition.y,
+      z: randomPosition.z,
+      scale: THREE.MathUtils.randFloat(controls.targetMinScale, controls.targetMaxScale),
+    })
+  }
+
+  normalizedTargets.slice(0, targetCount).forEach((targetData) => {
+    const bullseye = createBullseye(1)
+    bullseye.position.set(
+      THREE.MathUtils.clamp(targetData.x, -xLimit, xLimit),
+      THREE.MathUtils.clamp(targetData.y, -yLimit, yLimit),
+      THREE.MathUtils.clamp(targetData.z, farZ, nearZ)
+    )
+    setSecondaryTargetScale(bullseye, targetData.scale)
+    secondaryTargets.add(bullseye)
+  })
+}
+
+const applyLayoutSnapshot = (snapshot: LayoutSnapshot) => {
+  controls.roomDepth = snapshot.controls.roomDepth
+  controls.targetNear = snapshot.controls.targetNear
+  controls.targetFar = snapshot.controls.targetFar
+  controls.targetMinScale = snapshot.controls.targetMinScale
+  controls.targetMaxScale = snapshot.controls.targetMaxScale
+  controls.mainTargetDepth = snapshot.controls.mainTargetDepth
+  controls.mainTargetScale = snapshot.controls.mainTargetScale
+
+  normalizeTargetDepthControls()
+  normalizeMainTargetControls()
+  updateRoomSize()
+  setSecondaryTargetsFromSnapshot(snapshot.secondaryTargets)
+  keepTargetsInsideRoom()
+}
+
+const isValidLayoutSnapshot = (value: unknown): value is LayoutSnapshot => {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const snapshot = value as Partial<LayoutSnapshot>
+  if (snapshot.version !== 1 || !snapshot.controls || !Array.isArray(snapshot.secondaryTargets)) {
+    return false
+  }
+
+  const controlsData = snapshot.controls as Partial<LayoutSnapshot['controls']>
+  const requiredControlKeys: Array<keyof LayoutSnapshot['controls']> = [
+    'roomDepth',
+    'targetNear',
+    'targetFar',
+    'targetMinScale',
+    'targetMaxScale',
+    'mainTargetDepth',
+    'mainTargetScale',
+    'targetCount',
+  ]
+
+  if (requiredControlKeys.some((key) => typeof controlsData[key] !== 'number')) {
+    return false
+  }
+
+  return snapshot.secondaryTargets.every((target) =>
+    typeof target.x === 'number' &&
+    typeof target.y === 'number' &&
+    typeof target.z === 'number' &&
+    typeof target.scale === 'number'
+  )
+}
+
+const buildSecondaryTargets = (requestedCount: number) => {
+  const { halfWidth, halfHeight } = getRoomBounds()
+  const { nearZ, farZ } = getTargetDepthRange()
+  const minScale = Math.min(controls.targetMinScale, controls.targetMaxScale)
+  const maxScale = Math.max(controls.targetMinScale, controls.targetMaxScale)
+  controls.targetMinScale = minScale
+  controls.targetMaxScale = maxScale
+  const xLimit = Math.max(halfWidth - 0.35, 0.1)
+  const yLimit = Math.max(halfHeight - 0.3, 0.1)
+  const targetCount = THREE.MathUtils.clamp(Math.floor(requestedCount), 2, 30)
+  controls.targetCount = targetCount
+  secondaryTargets.clear()
+
+  const positions = [...getSecondaryAnchorTargets()]
   for (let i = positions.length; i < targetCount; i += 1) {
     positions.push(randomSecondaryPosition())
   }
 
   positions.forEach(({ x, y, z }) => {
-    const bullseye = createBullseye(0.35)
-    bullseye.position.set(x, y, z)
+    const bullseye = createBullseye(1)
+    bullseye.position.set(
+      THREE.MathUtils.clamp(x, -xLimit, xLimit),
+      THREE.MathUtils.clamp(y, -yLimit, yLimit),
+      THREE.MathUtils.clamp(z, farZ, nearZ)
+    )
+    setSecondaryTargetScale(bullseye, THREE.MathUtils.randFloat(minScale, maxScale))
     secondaryTargets.add(bullseye)
   })
 }
 
-buildSecondaryTargets(Number(targetCountInput.value))
+buildSecondaryTargets(controls.targetCount)
+applyMainTargetSettings()
 
-rerandomizeTargetsButton.addEventListener('click', () => {
-  buildSecondaryTargets(Number(targetCountInput.value))
-  setStatus('Secondary targets rerandomized')
-})
-
-targetCountInput.addEventListener('change', () => {
-  buildSecondaryTargets(Number(targetCountInput.value))
-})
-
-const frameShape = new THREE.Shape()
-frameShape.moveTo(-WINDOW_WIDTH / 2, -WINDOW_HEIGHT / 2)
-frameShape.lineTo(WINDOW_WIDTH / 2, -WINDOW_HEIGHT / 2)
-frameShape.lineTo(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2)
-frameShape.lineTo(-WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2)
-frameShape.lineTo(-WINDOW_WIDTH / 2, -WINDOW_HEIGHT / 2)
-const framePoints = frameShape.getPoints()
-const frameGeometry = new THREE.BufferGeometry().setFromPoints(framePoints)
+const frameGeometry = new THREE.BufferGeometry()
 const frame = new THREE.Line(
   frameGeometry,
   new THREE.LineBasicMaterial({ color: 0x1f3548 })
 )
 frame.position.z = -0.002
 scene.add(frame)
+
+const getWindowBounds = () => {
+  const windowUnitsPerPixel =
+    WINDOW_HEIGHT / Math.max(sceneRoot.clientHeight, 1)
+  const width = sceneRoot.clientWidth * windowUnitsPerPixel
+  const height = sceneRoot.clientHeight * windowUnitsPerPixel
+  return {
+    left: -width / 2,
+    right: width / 2,
+    top: height / 2,
+    bottom: -height / 2,
+  }
+}
+
+const updateFrameGeometry = () => {
+  const { left, right, top, bottom } = getWindowBounds()
+  const framePoints = [
+    new THREE.Vector3(left, bottom, 0),
+    new THREE.Vector3(right, bottom, 0),
+    new THREE.Vector3(right, top, 0),
+    new THREE.Vector3(left, top, 0),
+    new THREE.Vector3(left, bottom, 0),
+  ]
+  frameGeometry.setFromPoints(framePoints)
+}
+
+updateFrameGeometry()
+
+const updateRoomSize = () => {
+  const { left, right, top, bottom } = getWindowBounds()
+  const roomWidth = right - left
+  const roomHeight = top - bottom
+  roomStructure.scale.set(
+    roomWidth / ROOM_WIDTH,
+    roomHeight / ROOM_HEIGHT,
+    getRoomDepth() / BASE_ROOM_DEPTH
+  )
+  applyMainTargetSettings()
+}
+
+const keepTargetsInsideRoom = () => {
+  const { halfWidth, halfHeight } = getRoomBounds()
+  const { nearZ, farZ } = getTargetDepthRange()
+  const xLimit = Math.max(halfWidth - 0.35, 0.1)
+  const yLimit = Math.max(halfHeight - 0.3, 0.1)
+
+  secondaryTargets.children.forEach((target) => {
+    target.position.x = THREE.MathUtils.clamp(target.position.x, -xLimit, xLimit)
+    target.position.y = THREE.MathUtils.clamp(target.position.y, -yLimit, yLimit)
+    target.position.z = THREE.MathUtils.clamp(target.position.z, farZ, nearZ)
+    const existingScale = Number(target.userData.targetScale ?? target.scale.x ?? 1)
+    setSecondaryTargetScale(target, existingScale)
+  })
+}
+
+updateRoomSize()
+keepTargetsInsideRoom()
 
 const view = {
   smoothed: { x: 0, y: 0, z: 1.4 },
@@ -279,10 +510,7 @@ const updateFrustum = () => {
   const eyeY = camera.position.y
   const eyeZ = Math.max(camera.position.z, 0.25)
 
-  const left = -WINDOW_WIDTH / 2
-  const right = WINDOW_WIDTH / 2
-  const top = WINDOW_HEIGHT / 2
-  const bottom = -WINDOW_HEIGHT / 2
+  const { left, right, top, bottom } = getWindowBounds()
 
   const frustumLeft = (near * (left - eyeX)) / eyeZ
   const frustumRight = (near * (right - eyeX)) / eyeZ
@@ -337,9 +565,9 @@ const applyPose = (pose: Pose) => {
     view.hasCalibration = true
   }
 
-  const sensX = Number(sensXInput.value)
-  const sensY = Number(sensYInput.value)
-  const sensZ = Number(sensZInput.value)
+  const sensX = controls.horizontalSensitivity
+  const sensY = controls.verticalSensitivity
+  const sensZ = controls.depthSensitivity
 
   const normalizedX = -(pose.x - view.calibration.x) * sensX
   const normalizedY = (view.calibration.y - pose.y) * sensY
@@ -358,7 +586,6 @@ const animate = () => {
   const pose = readPose()
   if (pose) {
     applyPose(pose)
-    calibrateButton.disabled = false
     setStatus('Tracking active')
   } else if (performance.now() - view.lastPoseAt > 800) {
     view.target.x = 0
@@ -367,7 +594,7 @@ const animate = () => {
     setStatus('No face detected')
   }
 
-  const alpha = Number(smoothInput.value)
+  const alpha = controls.smoothing
   view.smoothed.x += (view.target.x - view.smoothed.x) * alpha
   view.smoothed.y += (view.target.y - view.smoothed.y) * alpha
   view.smoothed.z += (view.target.z - view.smoothed.z) * alpha
@@ -386,6 +613,9 @@ const resize = () => {
   renderer.setSize(width, height)
   camera.aspect = width / height
   camera.updateProjectionMatrix()
+  updateFrameGeometry()
+  updateRoomSize()
+  keepTargetsInsideRoom()
 }
 
 const loadTracker = async () => {
@@ -423,23 +653,187 @@ const startCamera = async () => {
     webcam.srcObject = stream
     await webcam.play()
     setStatus('Camera ready, searching for face...')
-    startButton.disabled = true
   } catch (error) {
     console.error(error)
     setStatus('Camera or model failed to start')
   }
 }
 
-startButton.addEventListener('click', () => {
-  void startCamera()
-})
+const applyRoomAndTargetSettings = () => {
+  normalizeTargetDepthControls()
+  normalizeMainTargetControls()
+  mainTargetDepthController.min(0.1).max(controls.roomDepth - 0.05)
+  targetNearController.min(0.1).max(controls.roomDepth - 0.15)
+  targetFarController.min(controls.targetNear + 0.1).max(controls.roomDepth - 0.05)
+  roomDepthController.updateDisplay()
+  mainTargetDepthController.updateDisplay()
+  mainTargetScaleController.updateDisplay()
+  targetCountController.updateDisplay()
+  targetMinScaleController.updateDisplay()
+  targetMaxScaleController.updateDisplay()
+  targetNearController.updateDisplay()
+  targetFarController.updateDisplay()
+  updateRoomSize()
+  keepTargetsInsideRoom()
+}
 
-calibrateButton.addEventListener('click', () => {
+const exportLayoutToDisk = () => {
+  const snapshot = createLayoutSnapshot()
+  const data = JSON.stringify(snapshot, null, 2)
+  const blob = new Blob([data], { type: 'application/json' })
+  const fileName = `target-layout-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+  setStatus('Layout exported as JSON')
+}
+
+const importLayoutFromDisk = async () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,application/json'
+  input.onchange = async () => {
+    try {
+      const file = input.files?.[0]
+      if (!file) {
+        return
+      }
+
+      const text = await file.text()
+      const parsed = JSON.parse(text) as unknown
+      if (!isValidLayoutSnapshot(parsed)) {
+        setStatus('Invalid layout JSON')
+        return
+      }
+
+      applyLayoutSnapshot(parsed)
+      applyRoomAndTargetSettings()
+      setSecondaryTargetsFromSnapshot(parsed.secondaryTargets)
+      keepTargetsInsideRoom()
+      setStatus('Layout imported from JSON')
+    } catch (error) {
+      console.error(error)
+      setStatus('Failed to import layout JSON')
+    }
+  }
+  input.click()
+}
+
+const saveLayoutToLocalStorage = () => {
+  try {
+    const snapshot = createLayoutSnapshot()
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(snapshot))
+    setStatus('Layout saved locally')
+  } catch (error) {
+    console.error(error)
+    setStatus('Failed to save layout locally')
+  }
+}
+
+const loadLayoutFromLocalStorage = () => {
+  try {
+    const saved = localStorage.getItem(LAYOUT_STORAGE_KEY)
+    if (!saved) {
+      setStatus('No local layout found')
+      return
+    }
+
+    const parsed = JSON.parse(saved) as unknown
+    if (!isValidLayoutSnapshot(parsed)) {
+      setStatus('Saved local layout is invalid')
+      return
+    }
+
+    applyLayoutSnapshot(parsed)
+    applyRoomAndTargetSettings()
+    setSecondaryTargetsFromSnapshot(parsed.secondaryTargets)
+    keepTargetsInsideRoom()
+    setStatus('Layout loaded from local save')
+  } catch (error) {
+    console.error(error)
+    setStatus('Failed to load local layout')
+  }
+}
+
+const gui = new GUI({ container: sceneRoot, title: 'Tracking Controls' })
+gui.open()
+gui.domElement.style.position = 'absolute'
+gui.domElement.style.top = '0.75rem'
+gui.domElement.style.right = '0.75rem'
+gui.domElement.style.zIndex = '4'
+gui.add({ startCamera: () => void startCamera() }, 'startCamera').name('Start Camera')
+gui.add({ calibrate: () => {
   view.hasCalibration = false
   setStatus('Calibration reset, hold neutral pose')
+} }, 'calibrate').name('Calibrate Center')
+const roomDepthController = gui.add(controls, 'roomDepth', 1.2, 8, 0.1).name('Room Depth')
+const mainTargetDepthController =
+  gui.add(controls, 'mainTargetDepth', 0.1, BASE_ROOM_DEPTH - 0.05, 0.05).name('Main Target Depth')
+const mainTargetScaleController =
+  gui.add(controls, 'mainTargetScale', 0.3, 2.5, 0.01).name('Main Target Size')
+const targetNearController = gui.add(controls, 'targetNear', 0.1, 7.5, 0.05).name('Target Near')
+const targetFarController = gui.add(controls, 'targetFar', 0.2, 8, 0.05).name('Target Far')
+const targetMinScaleController =
+  gui.add(controls, 'targetMinScale', 0.1, 0.7, 0.01).name('Target Min Size')
+const targetMaxScaleController =
+  gui.add(controls, 'targetMaxScale', 0.12, 1.1, 0.01).name('Target Max Size')
+gui.add(controls, 'horizontalSensitivity', 0.5, 6, 0.1).name('Horizontal Sensitivity')
+gui.add(controls, 'verticalSensitivity', 0.5, 6, 0.1).name('Vertical Sensitivity')
+gui.add(controls, 'depthSensitivity', 0, 5, 0.1).name('Depth Sensitivity')
+gui.add(controls, 'smoothing', 0.02, 0.4, 0.01).name('Smoothing')
+const targetCountController = gui
+  .add(controls, 'targetCount', 2, 30, 1)
+  .name('Secondary Targets')
+  .onChange((value: number) => {
+    buildSecondaryTargets(value)
+  })
+gui
+  .add({ rerandomize: () => {
+    buildSecondaryTargets(controls.targetCount)
+    setStatus('Secondary targets rerandomized')
+  } }, 'rerandomize')
+  .name('Rerandomize Targets')
+gui.add({ exportLayoutToDisk }, 'exportLayoutToDisk').name('Export Layout JSON')
+gui.add({ importLayoutFromDisk: () => void importLayoutFromDisk() }, 'importLayoutFromDisk').name('Import Layout JSON')
+gui.add({ saveLayoutToLocalStorage }, 'saveLayoutToLocalStorage').name('Save Layout Local')
+gui.add({ loadLayoutFromLocalStorage }, 'loadLayoutFromLocalStorage').name('Load Layout Local')
+
+roomDepthController.onChange(() => {
+  applyRoomAndTargetSettings()
+})
+
+mainTargetDepthController.onChange(() => {
+  applyRoomAndTargetSettings()
+})
+
+mainTargetScaleController.onChange(() => {
+  applyRoomAndTargetSettings()
+})
+
+targetNearController.onChange(() => {
+  applyRoomAndTargetSettings()
+})
+
+targetFarController.onChange(() => {
+  applyRoomAndTargetSettings()
+})
+
+targetMinScaleController.onChange(() => {
+  controls.targetMinScale = Math.min(controls.targetMinScale, controls.targetMaxScale)
+  targetMinScaleController.updateDisplay()
+  applyRoomAndTargetSettings()
+})
+
+targetMaxScaleController.onChange(() => {
+  controls.targetMaxScale = Math.max(controls.targetMaxScale, controls.targetMinScale)
+  targetMaxScaleController.updateDisplay()
+  applyRoomAndTargetSettings()
 })
 
 window.addEventListener('resize', resize)
 resize()
-setStatus('Click Start Camera to begin')
+setStatus('Open controls and click Start Camera')
 animate()

@@ -2,6 +2,8 @@
 
 Portal is a browser-based experiment that tracks head pose from your webcam and uses it to drive a `three.js` camera, creating a virtual window/parallax effect.
 
+The app now runs as a full-window Three.js viewport and uses in-scene `lil-gui` controls instead of page sliders.
+
 ## Tech stack
 
 - Vite + TypeScript
@@ -15,7 +17,6 @@ Portal is a browser-based experiment that tracks head pose from your webcam and 
 ## Local development
 
 ```bash
-cd webapp
 npm install
 npm run dev
 ```
@@ -23,16 +24,38 @@ npm run dev
 ## Build
 
 ```bash
-cd webapp
 npm run build
 ```
 
 ## Preview production build
 
 ```bash
-cd webapp
 npm run preview
 ```
+
+Run commands from `webapp/`.
+
+## Controls
+
+All runtime controls are in the top-right `Tracking Controls` panel:
+
+- Camera and calibration actions
+- Tracking sensitivity and smoothing
+- Room depth
+- Main target depth and size
+- Secondary target count, near/far depth range, and size range
+- Target rerandomization
+
+## Layout save/load
+
+Target layouts can be persisted and restored from the GUI:
+
+- `Export Layout JSON` downloads a snapshot file
+- `Import Layout JSON` loads a previously exported file
+- `Save Layout Local` stores the snapshot in browser local storage
+- `Load Layout Local` restores the locally saved snapshot
+
+Snapshot data includes room/target controls, main target depth+size, and all secondary target positions and scales.
 
 ## Notes
 

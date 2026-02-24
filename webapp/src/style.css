@@ -33,16 +33,24 @@ body {
 }
 
 #app {
-  width: min(1080px, 100% - 2rem);
-  margin: 1.1rem auto 1.4rem;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
 }
 
 .app-shell {
-  display: grid;
-  gap: 0.9rem;
+  position: relative;
+  width: 100%;
+  height: 100%;
 }
 
 .top-bar {
+  position: absolute;
+  left: 50%;
+  top: 0.85rem;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: min(1040px, calc(100% - 1.7rem));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -98,17 +106,17 @@ button:disabled {
 
 .viewport-card {
   position: relative;
-  border-radius: 18px;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
   overflow: hidden;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  box-shadow: 0 20px 36px rgba(58, 90, 113, 0.2);
 }
 
 .scene {
   width: 100%;
-  aspect-ratio: 16 / 10;
-  min-height: 360px;
+  height: 100%;
+  min-height: 100vh;
 }
 
 .scene canvas {
@@ -138,13 +146,21 @@ button:disabled {
 }
 
 .controls {
+  position: absolute;
+  left: 0.85rem;
+  bottom: 0.85rem;
+  z-index: 2;
+  width: min(460px, calc(100% - 1.7rem));
+  max-height: calc(100% - 1.7rem);
+  overflow: auto;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem 1rem;
   padding: 0.95rem 1rem;
-  border-radius: 16px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
 }
 
 label {
@@ -174,26 +190,40 @@ input[type='number'] {
 
 @media (max-width: 760px) {
   #app {
-    width: calc(100% - 1rem);
-    margin: 0.5rem auto 0.8rem;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
   }
 
   .top-bar {
+    top: 0.55rem;
+    width: calc(100% - 1.1rem);
     align-items: flex-start;
     flex-direction: column;
+    padding: 0.72rem 0.8rem;
   }
 
   .controls {
+    width: calc(100% - 1.1rem);
+    left: 0.55rem;
+    bottom: 0.55rem;
+    max-height: 58%;
     grid-template-columns: 1fr;
+    gap: 0.45rem;
+    padding: 0.72rem;
   }
 
   .scene {
-    min-height: 280px;
+    min-height: 100vh;
   }
 
   #webcam {
     width: 116px;
     bottom: 0.55rem;
     right: 0.55rem;
+  }
+
+  .status-pill {
+    top: 0.55rem;
   }
 }
