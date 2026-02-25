@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-02-25
+
+- Added scene source switching in GUI with support for loading `scene.glb` and returning to the default room + targets view.
+- Added GLB camera anchor support (`cameraPosition`) plus expanded camera debugging tools, including manual camera transform controls and lens sliders (`FOV`, `Near`, `Far`).
+- Added rendering controls for fog, exposure, environment lighting, sun position, shadow tuning, and sky visibility.
+- Improved GLB lighting pipeline with tonemapping, environment map controls, shadow casting/receiving controls, and a fallback shadow catcher plane.
+- Added color pickers for fog and background (background picker now disables skybox to preview color immediately).
+
 ## 2026-02-24
 
 - Moved control UI from page-based HTML sliders to in-viewport `lil-gui` controls.

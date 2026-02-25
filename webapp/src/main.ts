@@ -2,6 +2,8 @@ import './style.css'
 import * as THREE from 'three'
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main class="app-shell">
@@ -61,6 +63,29 @@ const controls = {
   verticalSensitivity: 2.2,
   depthSensitivity: 1.6,
   smoothing: 0.14,
+  cameraFov: 60,
+  cameraNear: 0.05,
+  cameraFar: 100,
+  fogColor: '#d7e6f1',
+  backgroundColor: '#d6e4ef',
+  fogDensity: 0.05,
+  exposure: 1.05,
+  useEnvironmentLight: true,
+  environmentIntensity: 1,
+  ambientIntensity: 0.35,
+  hemiIntensity: 0.65,
+  keyIntensity: 1.45,
+  fillIntensity: 0.42,
+  sunX: 4,
+  sunY: 6,
+  sunZ: 5,
+  keyShadowBias: -0.00015,
+  keyShadowNormalBias: 0.01,
+  keyShadowRadius: 1.5,
+  shadowGroundOpacity: 0.32,
+  allObjectsShadowCatcher: false,
+  showSkybox: true,
+  shadowsEnabled: true,
   targetCount: 10,
   roomDepth: BASE_ROOM_DEPTH,
   targetNear: 0.6,
@@ -69,19 +94,80 @@ const controls = {
   targetMaxScale: 0.42,
   mainTargetDepth: BASE_ROOM_DEPTH / 2,
   mainTargetScale: 1,
+  useSceneGlb: false,
+}
+
+const cameraDebug = {
+  manualControl: false,
+  freezeTracking: false,
+  positionX: 0,
+  positionY: 0,
+  positionZ: 1.4,
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
 }
 
 const scene = new THREE.Scene()
-scene.fog = new THREE.FogExp2(0xd7e6f1, 0.05)
+const sceneFog = new THREE.FogExp2(controls.fogColor, controls.fogDensity)
+scene.fog = sceneFog
 
-const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 100)
-camera.position.set(0, 0, 1.4)
+const DEFAULT_CAMERA_BASE_POSITION = new THREE.Vector3(0, 0, 1.4)
+
+const camera = new THREE.PerspectiveCamera(
+  controls.cameraFov,
+  1,
+  controls.cameraNear,
+  controls.cameraFar
+)
+camera.position.copy(DEFAULT_CAMERA_BASE_POSITION)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 renderer.setSize(sceneRoot.clientWidth, sceneRoot.clientHeight)
-renderer.setClearColor(0xd6e4ef)
+renderer.setClearColor(controls.backgroundColor)
+renderer.outputColorSpace = THREE.SRGBColorSpace
+renderer.toneMapping = THREE.ACESFilmicToneMapping
+renderer.toneMappingExposure = controls.exposure
+renderer.shadowMap.enabled = controls.shadowsEnabled
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
 sceneRoot.appendChild(renderer.domElement)
+
+const pmremGenerator = new THREE.PMREMGenerator(renderer)
+const environmentTexture = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture
+scene.environment = environmentTexture
+
+const createSkyTexture = () => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 1024
+  canvas.height = 512
+  const context = canvas.getContext('2d')
+
+  if (!context) {
+    return null
+  }
+
+  const gradient = context.createLinearGradient(0, 0, 0, canvas.height)
+  gradient.addColorStop(0, '#8fb7de')
+  gradient.addColorStop(0.35, '#b5d3ec')
+  gradient.addColorStop(0.62, '#d7e6f1')
+  gradient.addColorStop(1, '#f3f0e9')
+
+  context.fillStyle = gradient
+  context.fillRect(0, 0, canvas.width, canvas.height)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.mapping = THREE.EquirectangularReflectionMapping
+  texture.needsUpdate = true
+
+  return texture
+}
+
+const skyTexture = createSkyTexture()
+if (skyTexture) {
+  scene.background = skyTexture
+}
 
 const sceneWorld = new THREE.Group()
 scene.add(sceneWorld)
@@ -92,11 +178,43 @@ sceneWorld.add(roomStructure)
 const targetsLayer = new THREE.Group()
 sceneWorld.add(targetsLayer)
 
-const ambient = new THREE.AmbientLight(0xffffff, 0.9)
+const glbSceneLayer = new THREE.Group()
+glbSceneLayer.visible = false
+sceneWorld.add(glbSceneLayer)
+
+const ambient = new THREE.AmbientLight(0xffffff, controls.ambientIntensity)
 scene.add(ambient)
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.6)
-keyLight.position.set(2, 3, 2)
+const hemiLight = new THREE.HemisphereLight(0xc9e3ff, 0xcabda9, controls.hemiIntensity)
+scene.add(hemiLight)
+
+const keyLight = new THREE.DirectionalLight(0xfff3df, controls.keyIntensity)
+keyLight.position.set(controls.sunX, controls.sunY, controls.sunZ)
+keyLight.castShadow = true
+keyLight.shadow.mapSize.set(2048, 2048)
+keyLight.shadow.bias = controls.keyShadowBias
+keyLight.shadow.normalBias = controls.keyShadowNormalBias
+keyLight.shadow.radius = controls.keyShadowRadius
+keyLight.shadow.camera.near = 0.5
+keyLight.shadow.camera.far = 30
+keyLight.shadow.camera.left = -8
+keyLight.shadow.camera.right = 8
+keyLight.shadow.camera.top = 8
+keyLight.shadow.camera.bottom = -8
 scene.add(keyLight)
+scene.add(keyLight.target)
+
+const fillLight = new THREE.DirectionalLight(0xd9ecff, controls.fillIntensity)
+fillLight.position.set(-5, 3, -4)
+scene.add(fillLight)
+
+const glbShadowCatcherMaterial = new THREE.ShadowMaterial({
+  opacity: controls.shadowGroundOpacity,
+})
+const glbShadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), glbShadowCatcherMaterial)
+glbShadowCatcher.rotation.x = -Math.PI / 2
+glbShadowCatcher.receiveShadow = true
+glbShadowCatcher.visible = false
+glbSceneLayer.add(glbShadowCatcher)
 
 const wallLineMaterial = new THREE.LineBasicMaterial({ color: 0x4f6f86 })
 const createHorizontalGrid = () =>
@@ -496,11 +614,393 @@ const view = {
   lastPoseAt: 0,
 }
 
+const resetCameraDebug = () => {
+  cameraDebug.manualControl = false
+  cameraDebug.freezeTracking = false
+  cameraDebug.positionX = DEFAULT_CAMERA_BASE_POSITION.x
+  cameraDebug.positionY = DEFAULT_CAMERA_BASE_POSITION.y
+  cameraDebug.positionZ = DEFAULT_CAMERA_BASE_POSITION.z
+  cameraDebug.pitch = 0
+  cameraDebug.yaw = 0
+  cameraDebug.roll = 0
+}
+
+const copyCurrentCameraToManual = () => {
+  cameraDebug.positionX = camera.position.x
+  cameraDebug.positionY = camera.position.y
+  cameraDebug.positionZ = camera.position.z
+  cameraDebug.pitch = THREE.MathUtils.radToDeg(camera.rotation.x)
+  cameraDebug.yaw = THREE.MathUtils.radToDeg(camera.rotation.y)
+  cameraDebug.roll = THREE.MathUtils.radToDeg(camera.rotation.z)
+  cameraDebug.manualControl = true
+}
+
+const logCameraDebug = () => {
+  console.log('[camera debug] world position', {
+    x: Number(camera.position.x.toFixed(4)),
+    y: Number(camera.position.y.toFixed(4)),
+    z: Number(camera.position.z.toFixed(4)),
+  })
+  console.log('[camera debug] world rotation (deg)', {
+    x: Number(THREE.MathUtils.radToDeg(camera.rotation.x).toFixed(2)),
+    y: Number(THREE.MathUtils.radToDeg(camera.rotation.y).toFixed(2)),
+    z: Number(THREE.MathUtils.radToDeg(camera.rotation.z).toFixed(2)),
+  })
+}
+
 let faceLandmarker: FaceLandmarker | null = null
 let stream: MediaStream | null = null
+let glbLoadPromise: Promise<void> | null = null
+let loadedGlbRoot: THREE.Object3D | null = null
+let glbCameraBasePosition: THREE.Vector3 | null = null
+let glbCameraBaseQuaternion: THREE.Quaternion | null = null
+const trackingOffset = new THREE.Vector3()
+
+const gltfLoader = new GLTFLoader()
 
 const setStatus = (message: string) => {
   statusPill.textContent = message
+}
+
+const applyFogSettings = () => {
+  const density = THREE.MathUtils.clamp(controls.fogDensity, 0, 0.2)
+  controls.fogDensity = density
+  sceneFog.density = density
+  sceneFog.color.set(controls.fogColor)
+}
+
+const applySunSettings = () => {
+  controls.sunX = THREE.MathUtils.clamp(controls.sunX, -30, 30)
+  controls.sunY = THREE.MathUtils.clamp(controls.sunY, -5, 40)
+  controls.sunZ = THREE.MathUtils.clamp(controls.sunZ, -30, 30)
+  keyLight.position.set(controls.sunX, controls.sunY, controls.sunZ)
+  keyLight.updateMatrixWorld()
+}
+
+const applyEnvironmentSettings = () => {
+  controls.environmentIntensity = THREE.MathUtils.clamp(controls.environmentIntensity, 0, 3)
+  scene.environment = controls.useEnvironmentLight ? environmentTexture : null
+
+  loadedGlbRoot?.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) {
+      return
+    }
+
+    const materials = Array.isArray(node.material)
+      ? node.material
+      : [node.material]
+
+    materials.forEach((material) => {
+      if (
+        material instanceof THREE.MeshStandardMaterial ||
+        material instanceof THREE.MeshPhysicalMaterial
+      ) {
+        material.envMapIntensity = controls.useEnvironmentLight
+          ? controls.environmentIntensity
+          : 0
+        material.needsUpdate = true
+      }
+    })
+  })
+}
+
+const applyGlbShadowReceiverMode = () => {
+  if (!loadedGlbRoot) {
+    return
+  }
+
+  loadedGlbRoot.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) {
+      return
+    }
+
+    if (controls.allObjectsShadowCatcher) {
+      node.castShadow = controls.shadowsEnabled
+      node.receiveShadow = controls.shadowsEnabled
+      return
+    }
+
+    node.castShadow = controls.shadowsEnabled
+    node.receiveShadow = false
+  })
+}
+
+const applyRenderSettings = () => {
+  controls.exposure = THREE.MathUtils.clamp(controls.exposure, 0, 2.5)
+  controls.ambientIntensity = THREE.MathUtils.clamp(controls.ambientIntensity, 0, 2)
+  controls.hemiIntensity = THREE.MathUtils.clamp(controls.hemiIntensity, 0, 2)
+  controls.keyIntensity = THREE.MathUtils.clamp(controls.keyIntensity, 0, 4)
+  controls.fillIntensity = THREE.MathUtils.clamp(controls.fillIntensity, 0, 4)
+  controls.keyShadowBias = THREE.MathUtils.clamp(controls.keyShadowBias, -0.01, 0.01)
+  controls.keyShadowNormalBias = THREE.MathUtils.clamp(controls.keyShadowNormalBias, 0, 0.2)
+  controls.keyShadowRadius = THREE.MathUtils.clamp(controls.keyShadowRadius, 0, 8)
+  controls.shadowGroundOpacity = THREE.MathUtils.clamp(controls.shadowGroundOpacity, 0, 1)
+
+  renderer.toneMappingExposure = controls.exposure
+  renderer.shadowMap.enabled = controls.shadowsEnabled
+  applyEnvironmentSettings()
+
+  ambient.intensity = controls.ambientIntensity
+  hemiLight.intensity = controls.hemiIntensity
+  keyLight.intensity = controls.keyIntensity
+  fillLight.intensity = controls.fillIntensity
+  applySunSettings()
+
+  keyLight.castShadow = controls.shadowsEnabled
+  keyLight.shadow.bias = controls.keyShadowBias
+  keyLight.shadow.normalBias = controls.keyShadowNormalBias
+  keyLight.shadow.radius = controls.keyShadowRadius
+  glbShadowCatcherMaterial.opacity = controls.shadowGroundOpacity
+  glbShadowCatcher.visible =
+    controls.shadowsEnabled &&
+    controls.useSceneGlb &&
+    !controls.allObjectsShadowCatcher
+
+  applyGlbShadowReceiverMode()
+
+  if (controls.showSkybox && skyTexture) {
+    scene.background = skyTexture
+  } else {
+    scene.background = null
+  }
+  renderer.setClearColor(controls.backgroundColor)
+}
+
+const applyCameraLensSettings = () => {
+  controls.cameraFov = THREE.MathUtils.clamp(controls.cameraFov, 20, 120)
+  controls.cameraNear = THREE.MathUtils.clamp(controls.cameraNear, 0.01, 10)
+  controls.cameraFar = THREE.MathUtils.clamp(
+    controls.cameraFar,
+    controls.cameraNear + 0.1,
+    1000
+  )
+
+  camera.fov = controls.cameraFov
+  camera.near = controls.cameraNear
+  camera.far = controls.cameraFar
+  camera.updateProjectionMatrix()
+}
+
+const setCameraDefaults = () => {
+  applyCameraLensSettings()
+}
+
+const ensureSceneGlbLoaded = async () => {
+  if (loadedGlbRoot) {
+    return
+  }
+
+  if (!glbLoadPromise) {
+    glbLoadPromise = new Promise<void>((resolve, reject) => {
+      gltfLoader.load(
+        '/scene2.glb',
+        (gltf) => {
+          loadedGlbRoot = gltf.scene
+          gltf.scene.traverse((node) => {
+            if (node instanceof THREE.Mesh) {
+              const materials = Array.isArray(node.material)
+                ? node.material
+                : [node.material]
+
+              materials.forEach((material) => {
+                if (
+                  material instanceof THREE.MeshStandardMaterial ||
+                  material instanceof THREE.MeshPhysicalMaterial
+                ) {
+                  material.envMapIntensity = controls.environmentIntensity
+                  material.needsUpdate = true
+                }
+              })
+            }
+          })
+
+          const sceneBounds = new THREE.Box3().setFromObject(gltf.scene)
+          if (!sceneBounds.isEmpty()) {
+            const sceneSize = sceneBounds.getSize(new THREE.Vector3())
+            const sceneCenter = sceneBounds.getCenter(new THREE.Vector3())
+            const maxHalfSpan = Math.max(sceneSize.x, sceneSize.z, 2) * 0.7
+
+            glbShadowCatcher.position.set(sceneCenter.x, sceneBounds.min.y + 0.002, sceneCenter.z)
+            glbShadowCatcher.scale.set(
+              Math.max(sceneSize.x * 1.1, 2),
+              Math.max(sceneSize.z * 1.1, 2),
+              1
+            )
+
+            keyLight.target.position.copy(sceneCenter)
+            keyLight.shadow.camera.left = -maxHalfSpan
+            keyLight.shadow.camera.right = maxHalfSpan
+            keyLight.shadow.camera.bottom = -maxHalfSpan
+            keyLight.shadow.camera.top = maxHalfSpan
+            keyLight.shadow.camera.near = 0.1
+            keyLight.shadow.camera.far = Math.max(sceneSize.y * 3, 20)
+            keyLight.shadow.camera.updateProjectionMatrix()
+            keyLight.target.updateMatrixWorld()
+          }
+
+          glbSceneLayer.clear()
+          glbSceneLayer.add(glbShadowCatcher)
+          glbSceneLayer.add(gltf.scene)
+          applyGlbShadowReceiverMode()
+          console.log('[scene.glb] Ground shadow mode:', {
+            usingFallbackShadowCatcher: true,
+            allObjectsCatchShadows: controls.allObjectsShadowCatcher,
+          })
+
+          const cameraNamedObjects: string[] = []
+          const cameraTypeObjects: string[] = []
+          gltf.scene.traverse((node) => {
+            if (node.name && node.name.toLowerCase().includes('camera')) {
+              cameraNamedObjects.push(node.name)
+            }
+            if ((node as THREE.Object3D).type.toLowerCase().includes('camera')) {
+              cameraTypeObjects.push(node.name || '(unnamed)')
+            }
+          })
+          const uniqueCameraNamedObjects = [...new Set(cameraNamedObjects)]
+          const gltfCameraNames = gltf.cameras.map((sceneCamera, index) =>
+            sceneCamera.name?.trim() ? sceneCamera.name : `(unnamed gltf.cameras[${index}])`
+          )
+          console.log('[scene.glb] Objects containing "camera" in name:', uniqueCameraNamedObjects)
+          console.log('[scene.glb] Camera-typed objects in scene graph:', [...new Set(cameraTypeObjects)])
+          console.log('[scene.glb] Cameras array from glTF:', gltfCameraNames)
+
+          glbCameraBasePosition = null
+          glbCameraBaseQuaternion = null
+
+          const cameraPositionAnchor =
+            gltf.scene.getObjectByName('cameraPosition') ??
+            gltf.scene.getObjectByName('CameraPosition') ??
+            null
+
+          let firstPerspectiveCamera: THREE.PerspectiveCamera | null = null
+          const preferredCameraName = 'camera_main'
+
+          gltf.scene.traverse((node) => {
+            if (
+              !firstPerspectiveCamera &&
+              node instanceof THREE.PerspectiveCamera &&
+              node.name.toLowerCase() === preferredCameraName
+            ) {
+              firstPerspectiveCamera = node
+            }
+          })
+
+          if (!firstPerspectiveCamera) {
+            const namedCameraFromArray = gltf.cameras.find(
+              (sceneCamera): sceneCamera is THREE.PerspectiveCamera =>
+                sceneCamera instanceof THREE.PerspectiveCamera &&
+                sceneCamera.name.toLowerCase() === preferredCameraName
+            )
+            if (namedCameraFromArray) {
+              firstPerspectiveCamera = namedCameraFromArray
+            }
+          }
+
+          gltf.scene.traverse((node) => {
+            if (!firstPerspectiveCamera && node instanceof THREE.PerspectiveCamera) {
+              firstPerspectiveCamera = node
+            }
+          })
+
+          if (!firstPerspectiveCamera) {
+            firstPerspectiveCamera =
+              gltf.cameras.find((sceneCamera): sceneCamera is THREE.PerspectiveCamera =>
+                sceneCamera instanceof THREE.PerspectiveCamera
+              ) ?? null
+          }
+
+          const cameraAnchorPosition = new THREE.Vector3()
+          const cameraAnchorQuaternion = new THREE.Quaternion()
+          const cameraAnchorScale = new THREE.Vector3()
+
+          if (cameraPositionAnchor) {
+            cameraPositionAnchor.updateWorldMatrix(true, false)
+            cameraPositionAnchor.matrixWorld.decompose(
+              cameraAnchorPosition,
+              cameraAnchorQuaternion,
+              cameraAnchorScale
+            )
+          }
+
+          if (firstPerspectiveCamera) {
+            firstPerspectiveCamera.updateWorldMatrix(true, false)
+            const worldPosition = new THREE.Vector3()
+            const worldQuaternion = new THREE.Quaternion()
+            const worldScale = new THREE.Vector3()
+            firstPerspectiveCamera.matrixWorld.decompose(
+              worldPosition,
+              worldQuaternion,
+              worldScale
+            )
+
+            glbCameraBasePosition = cameraPositionAnchor ? cameraAnchorPosition : worldPosition
+            glbCameraBaseQuaternion = worldQuaternion
+            console.log('[scene.glb] Active camera:', {
+              name: firstPerspectiveCamera.name || '(unnamed)',
+              fov: firstPerspectiveCamera.fov,
+              near: firstPerspectiveCamera.near,
+              far: firstPerspectiveCamera.far,
+            })
+          } else if (cameraPositionAnchor) {
+            glbCameraBasePosition = cameraAnchorPosition
+            glbCameraBaseQuaternion = cameraAnchorQuaternion
+          }
+
+          resolve()
+        },
+        undefined,
+        (error) => {
+          glbLoadPromise = null
+          reject(error)
+        }
+      )
+    })
+  }
+
+  await glbLoadPromise
+}
+
+const applySceneSource = async (useSceneGlb: boolean) => {
+  if (useSceneGlb) {
+    roomStructure.visible = false
+    targetsLayer.visible = false
+    glbSceneLayer.visible = true
+
+    try {
+      if (!loadedGlbRoot) {
+        setStatus('Loading scene.glb...')
+      }
+      await ensureSceneGlbLoaded()
+      setCameraDefaults()
+      applyRenderSettings()
+      if (controls.useSceneGlb) {
+        setStatus('Using scene.glb')
+      }
+      setDefaultSceneControlsVisibility(false)
+      frame.visible = false
+    } catch (error) {
+      console.error(error)
+      controls.useSceneGlb = false
+      glbSceneLayer.visible = false
+      roomStructure.visible = true
+      targetsLayer.visible = true
+      setDefaultSceneControlsVisibility(true)
+      frame.visible = true
+      setStatus('Failed to load scene.glb')
+      sceneSourceController.updateDisplay()
+    }
+    return
+  }
+
+  glbSceneLayer.visible = false
+  roomStructure.visible = true
+  targetsLayer.visible = true
+  setCameraDefaults()
+  setDefaultSceneControlsVisibility(true)
+  frame.visible = true
+  applyRenderSettings()
+  setStatus('Using room + targets scene')
 }
 
 const updateFrustum = () => {
@@ -599,11 +1099,50 @@ const animate = () => {
   view.smoothed.y += (view.target.y - view.smoothed.y) * alpha
   view.smoothed.z += (view.target.z - view.smoothed.z) * alpha
 
-  camera.position.set(view.smoothed.x, view.smoothed.y, view.smoothed.z)
-  camera.lookAt(view.smoothed.x, view.smoothed.y, view.smoothed.z - 1)
-  updateFrustum()
+  if (cameraDebug.manualControl) {
+    camera.position.set(cameraDebug.positionX, cameraDebug.positionY, cameraDebug.positionZ)
+    camera.rotation.set(
+      THREE.MathUtils.degToRad(cameraDebug.pitch),
+      THREE.MathUtils.degToRad(cameraDebug.yaw),
+      THREE.MathUtils.degToRad(cameraDebug.roll),
+      'XYZ'
+    )
+    camera.aspect = sceneRoot.clientWidth / Math.max(sceneRoot.clientHeight, 1)
+    camera.updateProjectionMatrix()
+  } else {
+    const trackedX = cameraDebug.freezeTracking ? 0 : view.smoothed.x
+    const trackedY = cameraDebug.freezeTracking ? 0 : view.smoothed.y
+    const trackedZ = cameraDebug.freezeTracking ? DEFAULT_CAMERA_BASE_POSITION.z : view.smoothed.z
 
-  sceneWorld.rotation.y = view.smoothed.x * 0.03
+    if (controls.useSceneGlb) {
+      if (glbCameraBasePosition) {
+        trackingOffset.set(
+          trackedX,
+          trackedY,
+          trackedZ - DEFAULT_CAMERA_BASE_POSITION.z
+        )
+        if (glbCameraBaseQuaternion) {
+          trackingOffset.applyQuaternion(glbCameraBaseQuaternion)
+        }
+        camera.position.copy(glbCameraBasePosition).add(trackingOffset)
+      } else {
+        camera.position.set(trackedX, trackedY, trackedZ)
+      }
+      if (glbCameraBaseQuaternion) {
+        camera.quaternion.copy(glbCameraBaseQuaternion)
+      } else {
+        camera.lookAt(camera.position.x, camera.position.y, camera.position.z - 1)
+      }
+      camera.aspect = sceneRoot.clientWidth / Math.max(sceneRoot.clientHeight, 1)
+      camera.updateProjectionMatrix()
+    } else {
+      camera.position.set(trackedX, trackedY, trackedZ)
+      camera.lookAt(camera.position.x, camera.position.y, camera.position.z - 1)
+      updateFrustum()
+    }
+  }
+
+  sceneWorld.rotation.y = controls.useSceneGlb ? 0 : view.smoothed.x * 0.03
   renderer.render(scene, camera)
 }
 
@@ -764,11 +1303,151 @@ gui.domElement.style.position = 'absolute'
 gui.domElement.style.top = '0.75rem'
 gui.domElement.style.right = '0.75rem'
 gui.domElement.style.zIndex = '4'
+const renderFolder = gui.addFolder('Render')
+renderFolder
+  .addColor(controls, 'fogColor')
+  .name('Fog Color')
+  .onChange(() => {
+    applyFogSettings()
+  })
+renderFolder
+  .addColor(controls, 'backgroundColor')
+  .name('Background Color')
+  .onChange(() => {
+    controls.showSkybox = false
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'exposure', 0, 2.5, 0.01)
+  .name('Exposure')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'useEnvironmentLight')
+  .name('Environment Light')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'environmentIntensity', 0, 3, 0.01)
+  .name('Env Intensity')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'ambientIntensity', 0, 2, 0.01)
+  .name('Ambient Light')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'hemiIntensity', 0, 2, 0.01)
+  .name('Sky Fill Light')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'keyIntensity', 0, 4, 0.01)
+  .name('Key Light')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'fillIntensity', 0, 4, 0.01)
+  .name('Fill Light')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'sunX', -30, 30, 0.01)
+  .name('Sun Pos X')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'sunY', -5, 40, 0.01)
+  .name('Sun Pos Y')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'sunZ', -30, 30, 0.01)
+  .name('Sun Pos Z')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'shadowsEnabled')
+  .name('Shadows')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'allObjectsShadowCatcher')
+  .name('All Catch Shadows')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'keyShadowBias', -0.01, 0.01, 0.00001)
+  .name('Shadow Bias')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'keyShadowNormalBias', 0, 0.2, 0.0001)
+  .name('Shadow NormalBias')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'keyShadowRadius', 0, 8, 0.01)
+  .name('Shadow Softness')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'shadowGroundOpacity', 0, 1, 0.01)
+  .name('Ground Shadow')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+renderFolder
+  .add(controls, 'showSkybox')
+  .name('Show Skybox')
+  .onChange(() => {
+    applyRenderSettings()
+  })
+gui
+  .add(controls, 'fogDensity', 0, 0.2, 0.001)
+  .name('Depth Fog')
+  .onChange(() => {
+    applyFogSettings()
+  })
 gui.add({ startCamera: () => void startCamera() }, 'startCamera').name('Start Camera')
 gui.add({ calibrate: () => {
   view.hasCalibration = false
   setStatus('Calibration reset, hold neutral pose')
 } }, 'calibrate').name('Calibrate Center')
+const sceneSourceController = gui
+  .add(controls, 'useSceneGlb')
+  .name('Use scene.glb')
+  .onChange((value: boolean) => {
+    void applySceneSource(value)
+  })
+gui
+  .add(
+    {
+      useDefaultRoom: () => {
+        controls.useSceneGlb = false
+        sceneSourceController.updateDisplay()
+        void applySceneSource(false)
+      },
+    },
+    'useDefaultRoom'
+  )
+  .name('Use Room + Targets')
 const roomDepthController = gui.add(controls, 'roomDepth', 1.2, 8, 0.1).name('Room Depth')
 const mainTargetDepthController =
   gui.add(controls, 'mainTargetDepth', 0.1, BASE_ROOM_DEPTH - 0.05, 0.05).name('Main Target Depth')
@@ -784,22 +1463,107 @@ gui.add(controls, 'horizontalSensitivity', 0.5, 6, 0.1).name('Horizontal Sensiti
 gui.add(controls, 'verticalSensitivity', 0.5, 6, 0.1).name('Vertical Sensitivity')
 gui.add(controls, 'depthSensitivity', 0, 5, 0.1).name('Depth Sensitivity')
 gui.add(controls, 'smoothing', 0.02, 0.4, 0.01).name('Smoothing')
+const cameraDebugFolder = gui.addFolder('Camera Debug')
+cameraDebugFolder
+  .add(controls, 'cameraFov', 20, 120, 0.1)
+  .name('Camera FOV')
+  .onChange(() => {
+    applyCameraLensSettings()
+  })
+cameraDebugFolder
+  .add(controls, 'cameraNear', 0.01, 10, 0.01)
+  .name('Camera Near')
+  .onChange(() => {
+    applyCameraLensSettings()
+    cameraFarController.min(controls.cameraNear + 0.1)
+    cameraFarController.updateDisplay()
+  })
+const cameraFarController = cameraDebugFolder
+  .add(controls, 'cameraFar', 0.11, 1000, 0.1)
+  .name('Camera Far')
+  .onChange(() => {
+    applyCameraLensSettings()
+  })
+cameraDebugFolder
+  .add(cameraDebug, 'manualControl')
+  .name('Manual Camera')
+cameraDebugFolder
+  .add(cameraDebug, 'freezeTracking')
+  .name('Freeze Tracking')
+cameraDebugFolder
+  .add(cameraDebug, 'positionX', -20, 20, 0.01)
+  .name('Cam Pos X')
+cameraDebugFolder
+  .add(cameraDebug, 'positionY', -20, 20, 0.01)
+  .name('Cam Pos Y')
+cameraDebugFolder
+  .add(cameraDebug, 'positionZ', -20, 20, 0.01)
+  .name('Cam Pos Z')
+cameraDebugFolder
+  .add(cameraDebug, 'pitch', -180, 180, 0.1)
+  .name('Cam Rot X')
+cameraDebugFolder
+  .add(cameraDebug, 'yaw', -180, 180, 0.1)
+  .name('Cam Rot Y')
+cameraDebugFolder
+  .add(cameraDebug, 'roll', -180, 180, 0.1)
+  .name('Cam Rot Z')
+cameraDebugFolder
+  .add({ copyCurrentCameraToManual }, 'copyCurrentCameraToManual')
+  .name('Copy Current To Manual')
+cameraDebugFolder
+  .add({ resetCameraDebug }, 'resetCameraDebug')
+  .name('Reset Camera Debug')
+cameraDebugFolder
+  .add({ logCameraDebug }, 'logCameraDebug')
+  .name('Log Camera Transform')
+cameraDebugFolder.close()
 const targetCountController = gui
   .add(controls, 'targetCount', 2, 30, 1)
   .name('Secondary Targets')
   .onChange((value: number) => {
     buildSecondaryTargets(value)
   })
-gui
+const rerandomizeController = gui
   .add({ rerandomize: () => {
     buildSecondaryTargets(controls.targetCount)
     setStatus('Secondary targets rerandomized')
   } }, 'rerandomize')
   .name('Rerandomize Targets')
-gui.add({ exportLayoutToDisk }, 'exportLayoutToDisk').name('Export Layout JSON')
-gui.add({ importLayoutFromDisk: () => void importLayoutFromDisk() }, 'importLayoutFromDisk').name('Import Layout JSON')
-gui.add({ saveLayoutToLocalStorage }, 'saveLayoutToLocalStorage').name('Save Layout Local')
-gui.add({ loadLayoutFromLocalStorage }, 'loadLayoutFromLocalStorage').name('Load Layout Local')
+const exportLayoutController = gui
+  .add({ exportLayoutToDisk }, 'exportLayoutToDisk')
+  .name('Export Layout JSON')
+const importLayoutController = gui
+  .add({ importLayoutFromDisk: () => void importLayoutFromDisk() }, 'importLayoutFromDisk')
+  .name('Import Layout JSON')
+const saveLayoutController = gui
+  .add({ saveLayoutToLocalStorage }, 'saveLayoutToLocalStorage')
+  .name('Save Layout Local')
+const loadLayoutController = gui
+  .add({ loadLayoutFromLocalStorage }, 'loadLayoutFromLocalStorage')
+  .name('Load Layout Local')
+
+const defaultSceneControllers: Array<{ domElement: HTMLElement }> = [
+  roomDepthController,
+  mainTargetDepthController,
+  mainTargetScaleController,
+  targetNearController,
+  targetFarController,
+  targetMinScaleController,
+  targetMaxScaleController,
+  targetCountController,
+  rerandomizeController,
+  exportLayoutController,
+  importLayoutController,
+  saveLayoutController,
+  loadLayoutController,
+]
+
+function setDefaultSceneControlsVisibility(visible: boolean) {
+  defaultSceneControllers.forEach((controller) => {
+    controller.domElement.style.display = visible ? '' : 'none'
+  })
+}
 
 roomDepthController.onChange(() => {
   applyRoomAndTargetSettings()
@@ -835,5 +1599,10 @@ targetMaxScaleController.onChange(() => {
 
 window.addEventListener('resize', resize)
 resize()
+applyCameraLensSettings()
+cameraFarController.min(controls.cameraNear + 0.1)
+applyFogSettings()
+applyRenderSettings()
+void applySceneSource(controls.useSceneGlb)
 setStatus('Open controls and click Start Camera')
 animate()
