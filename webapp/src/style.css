@@ -123,6 +123,15 @@ button:disabled {
   display: block;
 }
 
+.face-switch-fade {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+
 #webcam {
   position: absolute;
   right: 0.85rem;

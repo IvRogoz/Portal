@@ -9,6 +9,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main class="app-shell">
     <section class="viewport-card">
       <div id="scene" class="scene"></div>
+      <div id="face-switch-fade" class="face-switch-fade"></div>
       <video id="webcam" autoplay playsinline muted></video>
       <div id="status" class="status-pill">Initializing...</div>
     </section>
@@ -20,6 +21,11 @@ type Pose = {
   y: number
   z: number
   eyeDistance: number
+}
+
+type TrackedFace = Pose & {
+  anchorX: number
+  anchorY: number
 }
 
 type SerializedTarget = {
@@ -47,6 +53,7 @@ type LayoutSnapshot = {
 const sceneRoot = document.querySelector<HTMLDivElement>('#scene')!
 const webcam = document.querySelector<HTMLVideoElement>('#webcam')!
 const statusPill = document.querySelector<HTMLDivElement>('#status')!
+const faceSwitchFade = document.querySelector<HTMLDivElement>('#face-switch-fade')!
 const LAYOUT_STORAGE_KEY = 'parallax-room-layout-v1'
 
 const WINDOW_HEIGHT = 1.8
@@ -95,6 +102,8 @@ const controls = {
   mainTargetDepth: BASE_ROOM_DEPTH / 2,
   mainTargetScale: 1,
   useSceneGlb: false,
+  autoRotateCustomTarget: false,
+  customTargetRotationSpeed: 20,
 }
 
 const cameraDebug = {
@@ -177,6 +186,9 @@ sceneWorld.add(roomStructure)
 
 const targetsLayer = new THREE.Group()
 sceneWorld.add(targetsLayer)
+
+const customTargetLayer = new THREE.Group()
+sceneWorld.add(customTargetLayer)
 
 const glbSceneLayer = new THREE.Group()
 glbSceneLayer.visible = false
@@ -614,6 +626,19 @@ const view = {
   lastPoseAt: 0,
 }
 
+const faceSwitchState = {
+  activeAnchor: null as { x: number; y: number } | null,
+  activePose: null as TrackedFace | null,
+  pendingFace: null as TrackedFace | null,
+  pendingSince: 0,
+  phase: 'idle' as 'idle' | 'fadingOut' | 'fadingIn',
+  opacity: 0,
+  holdMs: 280,
+  fadeDurationMs: 220,
+  switchDistanceThreshold: 0.12,
+  dominanceRatio: 1.08,
+}
+
 const resetCameraDebug = () => {
   cameraDebug.manualControl = false
   cameraDebug.freezeTracking = false
@@ -654,7 +679,10 @@ let glbLoadPromise: Promise<void> | null = null
 let loadedGlbRoot: THREE.Object3D | null = null
 let glbCameraBasePosition: THREE.Vector3 | null = null
 let glbCameraBaseQuaternion: THREE.Quaternion | null = null
+let customTargetModelRoot: THREE.Object3D | null = null
+let customTargetModelUrl: string | null = null
 const trackingOffset = new THREE.Vector3()
+let previousFrameAt = performance.now()
 
 const gltfLoader = new GLTFLoader()
 
@@ -681,27 +709,8 @@ const applyEnvironmentSettings = () => {
   controls.environmentIntensity = THREE.MathUtils.clamp(controls.environmentIntensity, 0, 3)
   scene.environment = controls.useEnvironmentLight ? environmentTexture : null
 
-  loadedGlbRoot?.traverse((node) => {
-    if (!(node instanceof THREE.Mesh)) {
-      return
-    }
-
-    const materials = Array.isArray(node.material)
-      ? node.material
-      : [node.material]
-
-    materials.forEach((material) => {
-      if (
-        material instanceof THREE.MeshStandardMaterial ||
-        material instanceof THREE.MeshPhysicalMaterial
-      ) {
-        material.envMapIntensity = controls.useEnvironmentLight
-          ? controls.environmentIntensity
-          : 0
-        material.needsUpdate = true
-      }
-    })
-  })
+  applyMaterialEnvironment(loadedGlbRoot)
+  applyMaterialEnvironment(customTargetModelRoot)
 }
 
 const applyGlbShadowReceiverMode = () => {
@@ -757,6 +766,7 @@ const applyRenderSettings = () => {
     !controls.allObjectsShadowCatcher
 
   applyGlbShadowReceiverMode()
+  applyCustomTargetShadowMode()
 
   if (controls.showSkybox && skyTexture) {
     scene.background = skyTexture
@@ -783,6 +793,149 @@ const applyCameraLensSettings = () => {
 
 const setCameraDefaults = () => {
   applyCameraLensSettings()
+}
+
+const updateTargetVisibility = () => {
+  targetsLayer.visible = !controls.useSceneGlb && !customTargetModelRoot
+  customTargetLayer.visible = !controls.useSceneGlb && !!customTargetModelRoot
+}
+
+const applyMaterialEnvironment = (root: THREE.Object3D | null) => {
+  root?.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) {
+      return
+    }
+
+    const materials = Array.isArray(node.material)
+      ? node.material
+      : [node.material]
+
+    materials.forEach((material) => {
+      if (
+        material instanceof THREE.MeshStandardMaterial ||
+        material instanceof THREE.MeshPhysicalMaterial
+      ) {
+        material.envMapIntensity = controls.useEnvironmentLight
+          ? controls.environmentIntensity
+          : 0
+        material.needsUpdate = true
+      }
+    })
+  })
+}
+
+const applyCustomTargetShadowMode = () => {
+  customTargetModelRoot?.traverse((node) => {
+    if (node instanceof THREE.Mesh) {
+      node.castShadow = controls.shadowsEnabled
+      node.receiveShadow = controls.shadowsEnabled
+    }
+  })
+}
+
+const fitCustomTargetModelToRoom = (modelRoot: THREE.Object3D) => {
+  const roomWidth = ROOM_WIDTH * roomStructure.scale.x
+  const roomHeight = ROOM_HEIGHT * roomStructure.scale.y
+  const roomDepth = getRoomDepth()
+  const targetWidth = roomWidth * (2 / 3)
+  const targetHeight = roomHeight * (2 / 3)
+  const targetDepth = roomDepth * (2 / 3)
+  const targetCenterY = -roomHeight / 2 + roomHeight / 6
+
+  modelRoot.position.set(0, 0, 0)
+  modelRoot.scale.setScalar(1)
+  modelRoot.updateWorldMatrix(true, true)
+
+  const bounds = new THREE.Box3().setFromObject(modelRoot)
+  if (bounds.isEmpty()) {
+    modelRoot.position.set(0, 0, getRoomCenterZ())
+    return
+  }
+
+  const size = bounds.getSize(new THREE.Vector3())
+  const center = bounds.getCenter(new THREE.Vector3())
+  const scale = Math.min(
+    targetWidth / Math.max(size.x, 0.001),
+    targetHeight / Math.max(size.y, 0.001),
+    targetDepth / Math.max(size.z, 0.001)
+  )
+
+  modelRoot.scale.setScalar(scale)
+  modelRoot.position.set(
+    -center.x * scale,
+    targetCenterY - center.y * scale,
+    getRoomCenterZ() - center.z * scale
+  )
+}
+
+const disposeCustomTargetModel = () => {
+  if (customTargetModelRoot) {
+    customTargetLayer.remove(customTargetModelRoot)
+    customTargetModelRoot.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) {
+        return
+      }
+
+      node.geometry.dispose()
+      const materials = Array.isArray(node.material) ? node.material : [node.material]
+      materials.forEach((material) => {
+        material.dispose()
+      })
+    })
+    customTargetModelRoot = null
+  }
+
+  if (customTargetModelUrl) {
+    URL.revokeObjectURL(customTargetModelUrl)
+    customTargetModelUrl = null
+  }
+
+  updateTargetVisibility()
+}
+
+const finalizeCustomTargetModel = (modelRoot: THREE.Object3D) => {
+  customTargetModelRoot = modelRoot
+  applyMaterialEnvironment(customTargetModelRoot)
+  applyCustomTargetShadowMode()
+  fitCustomTargetModelToRoom(modelRoot)
+  customTargetLayer.add(modelRoot)
+  updateTargetVisibility()
+}
+
+const clearCustomTargetModel = () => {
+  disposeCustomTargetModel()
+  setStatus('Custom target model cleared')
+}
+
+const importCustomTargetModel = async () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.glb,.gltf,model/gltf-binary,model/gltf+json'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) {
+      return
+    }
+
+    const nextUrl = URL.createObjectURL(file)
+    setStatus(`Loading ${file.name}...`)
+
+    try {
+      const gltf = await gltfLoader.loadAsync(nextUrl)
+      disposeCustomTargetModel()
+      customTargetModelUrl = nextUrl
+      finalizeCustomTargetModel(gltf.scene)
+      controls.useSceneGlb = false
+      sceneSourceController.updateDisplay()
+      await applySceneSource(false)
+      setStatus(`Loaded ${file.name} as custom target`)
+    } catch (error) {
+      URL.revokeObjectURL(nextUrl)
+      console.error(error)
+      setStatus('Failed to load custom 3D model')
+    }
+  }
+  input.click()
 }
 
 const ensureSceneGlbLoaded = async () => {
@@ -964,7 +1117,7 @@ const ensureSceneGlbLoaded = async () => {
 const applySceneSource = async (useSceneGlb: boolean) => {
   if (useSceneGlb) {
     roomStructure.visible = false
-    targetsLayer.visible = false
+    updateTargetVisibility()
     glbSceneLayer.visible = true
 
     try {
@@ -984,7 +1137,7 @@ const applySceneSource = async (useSceneGlb: boolean) => {
       controls.useSceneGlb = false
       glbSceneLayer.visible = false
       roomStructure.visible = true
-      targetsLayer.visible = true
+      updateTargetVisibility()
       setDefaultSceneControlsVisibility(true)
       frame.visible = true
       setStatus('Failed to load scene.glb')
@@ -995,7 +1148,7 @@ const applySceneSource = async (useSceneGlb: boolean) => {
 
   glbSceneLayer.visible = false
   roomStructure.visible = true
-  targetsLayer.visible = true
+  updateTargetVisibility()
   setCameraDefaults()
   setDefaultSceneControlsVisibility(true)
   frame.visible = true
@@ -1027,17 +1180,18 @@ const updateFrustum = () => {
   )
 }
 
-const readPose = (): Pose | null => {
-  if (!faceLandmarker || webcam.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return null
+const faceDistance = (
+  a: { x: number; y: number } | null,
+  b: { x: number; y: number }
+) => {
+  if (!a) {
+    return Number.POSITIVE_INFINITY
   }
 
-  const result = faceLandmarker.detectForVideo(webcam, performance.now())
-  if (!result.faceLandmarks.length) {
-    return null
-  }
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
 
-  const landmarks = result.faceLandmarks[0]
+const toTrackedFace = (landmarks: { x: number; y: number; z: number }[]): TrackedFace | null => {
   const leftEye = landmarks[33]
   const rightEye = landmarks[263]
   const nose = landmarks[1]
@@ -1047,12 +1201,142 @@ const readPose = (): Pose | null => {
   }
 
   const eyeDistance = Math.max(Math.abs(leftEye.x - rightEye.x), 0.01)
+  const anchorX = (leftEye.x + rightEye.x) / 2
+  const anchorY = nose.y
+
   return {
-    x: (leftEye.x + rightEye.x) / 2,
-    y: nose.y,
+    x: anchorX,
+    y: anchorY,
     z: nose.z,
     eyeDistance,
+    anchorX,
+    anchorY,
   }
+}
+
+const startFaceSwitchFade = () => {
+  if (faceSwitchState.phase === 'idle' && faceSwitchState.pendingFace) {
+    faceSwitchState.phase = 'fadingOut'
+  }
+}
+
+const updateFaceSwitchOverlay = (deltaSeconds: number) => {
+  if (faceSwitchState.phase === 'idle') {
+    faceSwitchState.opacity = 0
+  } else {
+    const step = deltaSeconds / (faceSwitchState.fadeDurationMs / 1000)
+
+    if (faceSwitchState.phase === 'fadingOut') {
+      faceSwitchState.opacity = Math.min(faceSwitchState.opacity + step, 1)
+      if (faceSwitchState.opacity >= 1 && faceSwitchState.pendingFace) {
+        faceSwitchState.activePose = faceSwitchState.pendingFace
+        faceSwitchState.activeAnchor = {
+          x: faceSwitchState.pendingFace.anchorX,
+          y: faceSwitchState.pendingFace.anchorY,
+        }
+        faceSwitchState.pendingFace = null
+        faceSwitchState.pendingSince = 0
+        faceSwitchState.phase = 'fadingIn'
+      }
+    } else if (faceSwitchState.phase === 'fadingIn') {
+      faceSwitchState.opacity = Math.max(faceSwitchState.opacity - step, 0)
+      if (faceSwitchState.opacity <= 0) {
+        faceSwitchState.phase = 'idle'
+      }
+    }
+  }
+
+  faceSwitchFade.style.opacity = faceSwitchState.opacity.toFixed(3)
+}
+
+const readPose = (): Pose | null => {
+  if (!faceLandmarker || webcam.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return null
+  }
+
+  const now = performance.now()
+  const result = faceLandmarker.detectForVideo(webcam, now)
+  if (!result.faceLandmarks.length) {
+    faceSwitchState.pendingFace = null
+    faceSwitchState.pendingSince = 0
+    return null
+  }
+
+  const detectedFaces = result.faceLandmarks
+    .map((landmarks) => toTrackedFace(landmarks))
+    .filter((face): face is TrackedFace => face !== null)
+
+  if (!detectedFaces.length) {
+    return null
+  }
+
+  const dominantFace = detectedFaces.reduce((closest, face) =>
+    face.eyeDistance > closest.eyeDistance ? face : closest
+  )
+
+  if (!faceSwitchState.activeAnchor || !faceSwitchState.activePose) {
+    faceSwitchState.activeAnchor = { x: dominantFace.anchorX, y: dominantFace.anchorY }
+    faceSwitchState.activePose = dominantFace
+    return dominantFace
+  }
+
+  let trackedFace = detectedFaces[0]
+  let trackedFaceDistance = faceDistance(faceSwitchState.activeAnchor, {
+    x: trackedFace.anchorX,
+    y: trackedFace.anchorY,
+  })
+
+  detectedFaces.slice(1).forEach((face) => {
+    const distance = faceDistance(faceSwitchState.activeAnchor, {
+      x: face.anchorX,
+      y: face.anchorY,
+    })
+    if (distance < trackedFaceDistance) {
+      trackedFace = face
+      trackedFaceDistance = distance
+    }
+  })
+
+  const hasTrackedFace = trackedFaceDistance <= faceSwitchState.switchDistanceThreshold
+
+  if (hasTrackedFace) {
+    faceSwitchState.activeAnchor = {
+      x: trackedFace.anchorX,
+      y: trackedFace.anchorY,
+    }
+    faceSwitchState.activePose = trackedFace
+  }
+
+  const dominantDistance = faceDistance(faceSwitchState.activeAnchor, {
+    x: dominantFace.anchorX,
+    y: dominantFace.anchorY,
+  })
+  const dominantOverridesTrackedFace =
+    (!hasTrackedFace ||
+      dominantFace.eyeDistance >
+        trackedFace.eyeDistance * faceSwitchState.dominanceRatio) &&
+    dominantDistance > faceSwitchState.switchDistanceThreshold
+
+  if (dominantOverridesTrackedFace && faceSwitchState.phase === 'idle') {
+    const matchesPendingFace =
+      faceSwitchState.pendingFace &&
+      faceDistance(
+        { x: faceSwitchState.pendingFace.anchorX, y: faceSwitchState.pendingFace.anchorY },
+        { x: dominantFace.anchorX, y: dominantFace.anchorY }
+      ) <= faceSwitchState.switchDistanceThreshold
+
+    if (!matchesPendingFace) {
+      faceSwitchState.pendingFace = dominantFace
+      faceSwitchState.pendingSince = now
+    } else if (now - faceSwitchState.pendingSince >= faceSwitchState.holdMs) {
+      startFaceSwitchFade()
+    }
+  } else if (faceSwitchState.phase === 'idle') {
+    faceSwitchState.pendingFace = null
+    faceSwitchState.pendingSince = 0
+  }
+
+  return faceSwitchState.activePose
 }
 
 const applyPose = (pose: Pose) => {
@@ -1082,6 +1366,10 @@ const applyPose = (pose: Pose) => {
 
 const animate = () => {
   requestAnimationFrame(animate)
+  const now = performance.now()
+  const deltaSeconds = Math.min((now - previousFrameAt) / 1000, 0.1)
+  previousFrameAt = now
+  updateFaceSwitchOverlay(deltaSeconds)
 
   const pose = readPose()
   if (pose) {
@@ -1142,6 +1430,11 @@ const animate = () => {
     }
   }
 
+  if (customTargetModelRoot && controls.autoRotateCustomTarget && !controls.useSceneGlb) {
+    customTargetModelRoot.rotation.y +=
+      THREE.MathUtils.degToRad(controls.customTargetRotationSpeed) * deltaSeconds
+  }
+
   sceneWorld.rotation.y = controls.useSceneGlb ? 0 : view.smoothed.x * 0.03
   renderer.render(scene, camera)
 }
@@ -1155,6 +1448,9 @@ const resize = () => {
   updateFrameGeometry()
   updateRoomSize()
   keepTargetsInsideRoom()
+  if (customTargetModelRoot) {
+    fitCustomTargetModelToRoom(customTargetModelRoot)
+  }
 }
 
 const loadTracker = async () => {
@@ -1168,7 +1464,7 @@ const loadTracker = async () => {
         'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
       delegate: 'GPU',
     },
-    numFaces: 1,
+    numFaces: 4,
     runningMode: 'VIDEO',
   })
 }
@@ -1448,6 +1744,18 @@ gui
     'useDefaultRoom'
   )
   .name('Use Room + Targets')
+gui
+  .add({ importCustomTargetModel: () => void importCustomTargetModel() }, 'importCustomTargetModel')
+  .name('Load Custom Target')
+gui
+  .add({ clearCustomTargetModel }, 'clearCustomTargetModel')
+  .name('Clear Custom Target')
+gui
+  .add(controls, 'autoRotateCustomTarget')
+  .name('Auto Rotate Target')
+gui
+  .add(controls, 'customTargetRotationSpeed', -180, 180, 1)
+  .name('Target Rotate Speed')
 const roomDepthController = gui.add(controls, 'roomDepth', 1.2, 8, 0.1).name('Room Depth')
 const mainTargetDepthController =
   gui.add(controls, 'mainTargetDepth', 0.1, BASE_ROOM_DEPTH - 0.05, 0.05).name('Main Target Depth')
@@ -1599,6 +1907,7 @@ targetMaxScaleController.onChange(() => {
 
 window.addEventListener('resize', resize)
 resize()
+updateTargetVisibility()
 applyCameraLensSettings()
 cameraFarController.min(controls.cameraNear + 0.1)
 applyFogSettings()
