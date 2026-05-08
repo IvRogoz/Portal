@@ -4,6 +4,10 @@ Portal is a browser-based experiment that tracks head pose from your webcam and 
 
 The app now runs as a full-window Three.js viewport and uses in-scene `lil-gui` controls instead of page sliders.
 
+## Preview
+
+<video src="https://raw.githubusercontent.com/IvRogoz/Portal/main/preview.mp4" controls width="720"></video>
+
 ## Tech stack
 
 - Vite + TypeScript
