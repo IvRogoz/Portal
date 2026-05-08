@@ -299,9 +299,45 @@ hazeDepths.forEach((depth, index) => {
 
 const bullseyeRings = [0.9, 0.72, 0.54, 0.36, 0.18]
 const bullseyeColors = [0xd1413d, 0xf4f1e8, 0xd1413d, 0xf4f1e8, 0xd1413d]
+const targetStemMaterial = new THREE.MeshBasicMaterial({
+  color: 0x213445,
+  transparent: true,
+  opacity: 0.82,
+})
+const TARGET_STEM_RADIUS = 0.045
+
+const getBackWallZ = () => ROOM_FRONT_Z - getRoomDepth()
+
+const updateTargetStem = (target: THREE.Object3D) => {
+  const stem = target.userData.stem as THREE.Mesh<THREE.CylinderGeometry> | undefined
+
+  if (!stem) {
+    return
+  }
+
+  const scaleZ = Math.max(Math.abs(target.scale.z), 0.0001)
+  const localBackZ = Math.min(0, (getBackWallZ() - target.position.z) / scaleZ)
+  const stemLength = Math.abs(localBackZ)
+  stem.visible = stemLength > 0.001
+  stem.geometry.dispose()
+  stem.geometry = new THREE.CylinderGeometry(
+    TARGET_STEM_RADIUS,
+    TARGET_STEM_RADIUS,
+    stemLength,
+    16
+  )
+  stem.position.z = localBackZ / 2
+}
 
 const createBullseye = (scale: number) => {
   const bullseye = new THREE.Group()
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(TARGET_STEM_RADIUS, TARGET_STEM_RADIUS, 1, 16),
+    targetStemMaterial
+  )
+  stem.rotation.x = Math.PI / 2
+  bullseye.userData.stem = stem
+  bullseye.add(stem)
 
   bullseyeRings.forEach((radius, index) => {
     const ring = new THREE.Mesh(
@@ -339,6 +375,7 @@ const applyMainTargetSettings = () => {
   normalizeMainTargetControls()
   mainBullseye.position.z = ROOM_FRONT_Z - controls.mainTargetDepth
   mainBullseye.scale.setScalar(controls.mainTargetScale)
+  updateTargetStem(mainBullseye)
 }
 
 const normalizeTargetDepthControls = () => {
@@ -408,6 +445,7 @@ const setSecondaryTargetScale = (target: THREE.Object3D, scale: number) => {
   )
   target.scale.setScalar(clampedScale)
   target.userData.targetScale = clampedScale
+  updateTargetStem(target)
 }
 
 const serializeSecondaryTargets = (): SerializedTarget[] =>
