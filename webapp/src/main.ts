@@ -104,6 +104,10 @@ const controls = {
   useSceneGlb: false,
   autoRotateCustomTarget: false,
   customTargetRotationSpeed: 20,
+  customTargetScale: 1,
+  customTargetOffsetX: 0,
+  customTargetOffsetY: 0,
+  customTargetOffsetZ: 0,
 }
 
 const cameraDebug = {
@@ -892,17 +896,18 @@ const fitCustomTargetModelToRoom = (modelRoot: THREE.Object3D) => {
 
   const size = bounds.getSize(new THREE.Vector3())
   const center = bounds.getCenter(new THREE.Vector3())
-  const scale = Math.min(
+  const fitScale = Math.min(
     targetWidth / Math.max(size.x, 0.001),
     targetHeight / Math.max(size.y, 0.001),
     targetDepth / Math.max(size.z, 0.001)
   )
+  const scale = fitScale * controls.customTargetScale
 
   modelRoot.scale.setScalar(scale)
   modelRoot.position.set(
-    -center.x * scale,
-    targetCenterY - center.y * scale,
-    getRoomCenterZ() - center.z * scale
+    -center.x * scale + controls.customTargetOffsetX,
+    targetCenterY - center.y * scale + controls.customTargetOffsetY,
+    getRoomCenterZ() - center.z * scale + controls.customTargetOffsetZ
   )
 }
 
@@ -1794,6 +1799,38 @@ gui
 gui
   .add(controls, 'customTargetRotationSpeed', -180, 180, 1)
   .name('Target Rotate Speed')
+gui
+  .add(controls, 'customTargetScale', 0.1, 4, 0.01)
+  .name('Custom Target Size')
+  .onChange(() => {
+    if (customTargetModelRoot) {
+      fitCustomTargetModelToRoom(customTargetModelRoot)
+    }
+  })
+gui
+  .add(controls, 'customTargetOffsetX', -4, 4, 0.01)
+  .name('Custom Target X')
+  .onChange(() => {
+    if (customTargetModelRoot) {
+      fitCustomTargetModelToRoom(customTargetModelRoot)
+    }
+  })
+gui
+  .add(controls, 'customTargetOffsetY', -3, 3, 0.01)
+  .name('Custom Target Y')
+  .onChange(() => {
+    if (customTargetModelRoot) {
+      fitCustomTargetModelToRoom(customTargetModelRoot)
+    }
+  })
+gui
+  .add(controls, 'customTargetOffsetZ', -6, 6, 0.01)
+  .name('Custom Target Z')
+  .onChange(() => {
+    if (customTargetModelRoot) {
+      fitCustomTargetModelToRoom(customTargetModelRoot)
+    }
+  })
 const roomDepthController = gui.add(controls, 'roomDepth', 1.2, 8, 0.1).name('Room Depth')
 const mainTargetDepthController =
   gui.add(controls, 'mainTargetDepth', 0.1, BASE_ROOM_DEPTH - 0.05, 0.05).name('Main Target Depth')
