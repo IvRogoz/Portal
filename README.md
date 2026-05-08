@@ -6,7 +6,9 @@ The app now runs as a full-window Three.js viewport and uses in-scene `lil-gui` 
 
 ## Preview
 
-<video src="https://raw.githubusercontent.com/IvRogoz/Portal/main/preview.mp4" controls width="720"></video>
+![Portal preview](preview.gif)
+
+[Full preview video](preview.mp4)
 
 ## Tech stack
 
