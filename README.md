@@ -41,10 +41,19 @@ All runtime controls are in the top-right `Tracking Controls` panel:
 
 - Camera and calibration actions
 - Tracking sensitivity and smoothing
+- Scene source switching between the default room + targets and `scene.glb`
 - Room depth
 - Main target depth and size
 - Secondary target count, near/far depth range, and size range
 - Target rerandomization
+- Custom target loading and clearing for GLB/GLTF models
+- Custom target size, X/Y/Z position offsets, auto-rotation, and rotation speed
+
+## Targets
+
+The default room renders a main bullseye plus secondary bullseye targets at varied depths. Each target includes a visible 3D stem from its center to the back wall to make depth relationships easier to read.
+
+Custom GLB/GLTF targets can replace the default bullseyes. Loaded custom targets are auto-fit into the room first, then adjusted with the custom target size and position controls.
 
 ## Layout save/load
 

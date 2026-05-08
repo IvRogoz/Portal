@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-08
+
+- Added visible 3D stems from each bullseye target center to the room back wall for clearer depth cues.
+- Replaced target stems with cylinder geometry so their thickness renders reliably in WebGL.
+- Added custom target transform controls for loaded GLB/GLTF models:
+  - custom target size
+  - custom target X/Y/Z position offsets
+- Added custom target auto-rotation controls and model loading/clearing actions to the GUI.
+
 ## 2026-02-25
 
 - Added scene source switching in GUI with support for loading `scene.glb` and returning to the default room + targets view.
